@@ -4,7 +4,7 @@ from numpy import linalg
 from conftest import skipif_yask
 
 from devito.logger import info
-from examples.seismic import demo_model, RickerSource, Receiver
+from examples.seismic import demo_model, TimeAxis, RickerSource, Receiver
 from examples.seismic.acoustic import AcousticWaveSolver
 
 
@@ -20,36 +20,38 @@ def test_acousticJ(shape, space_order):
 
     # Create two-layer "true" model from preset with a fault 1/3 way down
     model = demo_model('layers-isotropic', ratio=3, vp_top=1.5, vp_bottom=2.5,
-                       spacing=spacing, shape=shape, nbpml=nbpml)
+                       spacing=spacing, space_order=space_order, shape=shape,
+                       nbpml=nbpml, dtype=np.float64)
 
     # Derive timestepping from model spacing
     dt = model.critical_dt
-    nt = int(1 + (tn-t0) / dt)  # Number of timesteps
-    time_values = np.linspace(t0, tn, nt)  # Discretized time axis
+    time_range = TimeAxis(start=t0, stop=tn, step=dt)
 
     # Define source geometry (center of domain, just below surface)
-    src = RickerSource(name='src', grid=model.grid, f0=0.01, time=time_values)
+    src = RickerSource(name='src', grid=model.grid, f0=0.01, time_range=time_range)
     src.coordinates.data[0, :] = np.array(model.domain_size) * .5
     src.coordinates.data[0, -1] = 30.
 
     # Define receiver geometry (same as source, but spread across x)
-    rec = Receiver(name='nrec', grid=model.grid, ntime=nt, npoint=nrec)
+    rec = Receiver(name='nrec', grid=model.grid, time_range=time_range, npoint=nrec)
     rec.coordinates.data[:, 0] = np.linspace(0., model.domain_size[0], num=nrec)
     rec.coordinates.data[:, 1:] = src.coordinates.data[0, 1:]
 
     # Create solver object to provide relevant operators
     solver = AcousticWaveSolver(model, source=src, receiver=rec,
-                                time_order=2, space_order=space_order)
+                                kernel='OT2', space_order=space_order)
 
     # Create initial model (m0) with a constant velocity throughout
     model0 = demo_model('layers-isotropic', ratio=3, vp_top=1.5, vp_bottom=1.5,
-                        spacing=spacing, shape=shape, nbpml=nbpml)
+                        spacing=spacing, space_order=space_order, shape=shape,
+                        nbpml=nbpml, dtype=np.float64)
 
     # Compute the full wavefield u0
     _, u0, _ = solver.forward(save=True, m=model0.m)
 
     # Compute initial born perturbation from m - m0
     dm = model.m.data - model0.m.data
+
     du, _, _, _ = solver.born(dm, m=model0.m)
 
     # Compute gradientfrom initial perturbation

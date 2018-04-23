@@ -39,8 +39,8 @@ def function(name, shape, dimensions):
     return Function(name=name, shape=shape, dimensions=dimensions)
 
 
-def timefunction(name):
-    return TimeFunction(name=name, grid=grid)
+def timefunction(name, space_order=1):
+    return TimeFunction(name=name, grid=grid, space_order=space_order)
 
 
 @pytest.fixture(scope="session")
@@ -62,7 +62,8 @@ def iters(dims):
             lambda ex: Iteration(ex, dims['q'], (0, 4, 1)),
             lambda ex: Iteration(ex, dims['l'], (0, 6, 1)),
             lambda ex: Iteration(ex, x, (0, 5, 1)),
-            lambda ex: Iteration(ex, y, (0, 7, 1))]
+            lambda ex: Iteration(ex, y, (0, 7, 1)),
+            lambda ex: Iteration(ex, z, (0, 7, 1))]
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -153,17 +154,17 @@ def ti3(dims):
 
 @pytest.fixture(scope="session", autouse=True)
 def tu(dims):
-    return timefunction('tu').indexify()
+    return timefunction('tu', space_order=4).indexify()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def tv(dims):
-    return timefunction('tv').indexify()
+    return timefunction('tv', space_order=4).indexify()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def tw(dims):
-    return timefunction('tw').indexify()
+    return timefunction('tw', space_order=4).indexify()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -184,6 +185,11 @@ def fc(dims):
 @pytest.fixture(scope="session", autouse=True)
 def fd(dims):
     return array('fd', (3, 5), (x, y)).indexed
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fe(dims):
+    return array('fe', (3, 5, 3), (x, y, z)).indexed
 
 
 def EVAL(exprs, *args):
@@ -209,3 +215,16 @@ def EVAL(exprs, *args):
     for i in as_tuple(exprs):
         processed.append(eval(i, globals(), scope))
     return processed[0] if isinstance(exprs, str) else processed
+
+
+def configuration_override(key, value):
+    def dec(f):
+        def wrapper(*args, **kwargs):
+            oldvalue = configuration[key]
+            configuration[key] = value
+            f(*args, **kwargs)
+            configuration[key] = oldvalue
+
+        return wrapper
+
+    return dec

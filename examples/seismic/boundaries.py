@@ -2,7 +2,7 @@ from __future__ import division
 
 import numpy as np
 
-from devito import Dimension, Forward, Function
+from devito import Dimension, Function
 from devito.exceptions import InvalidArgument
 
 from sympy import Eq
@@ -21,7 +21,7 @@ class ABC(object):
     :param taxis : Forward or Backward, defines the propagation axis
     """
 
-    def __init__(self, model, field, m, taxis=Forward, **kwargs):
+    def __init__(self, model, field, m, forward=True, **kwargs):
         self.nbpml = int(model.nbpml)
         self.full_shape = model.shape_domain
         self.p_abc = Dimension(name="abc")
@@ -30,7 +30,7 @@ class ABC(object):
         self.field = field
         self.tindex = self.field.grid.time_dim
         self.m = m
-        self.taxis = taxis
+        self.forward = forward
         self.freesurface = kwargs.get("freesurface", False)
         self.damp_profile = self.damp_profile_init()
 
@@ -42,8 +42,8 @@ class ABC(object):
         :return: Symbolic equation inside the boundary layer
         """
         s = self.tindex.spacing
-        next = self.field.forward if self.taxis is Forward else self.field.backward
-        prev = self.field.backward if self.taxis is Forward else self.field.forward
+        next = self.field.forward if self.forward else self.field.backward
+        prev = self.field.backward if self.forward else self.field.forward
         return Eq(next, self.m / (self.m + s * self.damp_profile) * next +
                   s * self.damp_profile / (self.m + s * self.damp_profile) * prev)
 
@@ -54,7 +54,7 @@ class ABC(object):
         :return: SYmbolic equation of the free surface
         """
         ind_fs = self.field.indices[-1]
-        next = self.field.forward if self.taxis is Forward else self.field.backward
+        next = self.field.forward if self.forward else self.field.backward
         return [Eq(next.subs({ind_fs: self.p_abc}),
                    - next.subs({ind_fs: 2*self.nbpml - self.p_abc}))]
 

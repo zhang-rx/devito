@@ -1,38 +1,29 @@
 from sympy import solve, Symbol
 
-from devito import Eq, Operator, Forward, Backward, Function, TimeFunction
+from devito import Eq, Operator, Function, TimeFunction
 from devito.logger import error
 from examples.seismic import PointSource, Receiver, ABC
 
 
-def laplacian(field, time_order, m, s):
+def laplacian(field, m, s, kernel):
     """
     Spacial discretization for the isotropic acoustic wave equation. For a 4th
     order in time formulation, the 4th order time derivative is replaced by a
     double laplacian:
     H = (laplacian + s**2/12 laplacian(1/m*laplacian))
     :param field: Symbolic TimeFunction object, solution to be computed
-    :param time_order: time order
     :param m: square slowness
     :param s: symbol for the time-step
     :return: H
     """
-    if time_order == 2:
-        biharmonic = 0
-    elif time_order == 4:
-        biharmonic = field.laplace2(1/m)
-    else:
-        error("Unsupported time order %d, order has to be 2 or 4" %
-              time_order)
+    biharmonic = field.laplace2(1/m) if kernel == 'OT4' else 0
     return field.laplace + s**2/12 * biharmonic
 
-
-def iso_stencil(field, time_order, m, s, **kwargs):
+def iso_stencil(field, kernel, m, s, **kwargs):
     """
     Stencil for the acoustic isotropic wave-equation:
     u.dt2 - H + damp*u.dt = 0
     :param field: Symbolic TimeFunction object, solution to be computed
-    :param time_order: time order
     :param m: square slowness
     :param s: symbol for the time-step
     :param damp: ABC dampening field (Function)
@@ -50,20 +41,19 @@ def iso_stencil(field, time_order, m, s, **kwargs):
     # Solve the symbolic equation for the field to be updated
     eq_time = solve(eq, next, rational=False, simplify=False)[0]
     # Get the spacial FD
-    lap = laplacian(field, time_order, m, s)
+    lap = laplacian(field, m, s, kernel)
     # return the Stencil with H replaced by its symbolic expression
     return [Eq(next, eq_time.subs({H: lap}))]
 
 
-def ForwardOperator(model, source, receiver, time_order=2, space_order=4,
-                    save=False, **kwargs):
+def ForwardOperator(model, source, receiver, space_order=4,
+                    save=False, kernel='OT2', **kwargs):
     """
     Constructor method for the forward modelling operator in an acoustic media
 
     :param model: :class:`Model` object containing the physical parameters
     :param source: :class:`PointData` object containing the source geometry
     :param receiver: :class:`PointData` object containing the acquisition geometry
-    :param time_order: Time discretization order
     :param space_order: Space discretization order
     :param save: Saving flag, True saves all time steps, False only the three
     """
@@ -72,19 +62,16 @@ def ForwardOperator(model, source, receiver, time_order=2, space_order=4,
     u = TimeFunction(name='u', grid=model.grid,
                      save=source.nt if save else None,
                      time_order=2, space_order=space_order)
-    src = PointSource(name='src', grid=model.grid, ntime=source.nt,
+    src = PointSource(name='src', grid=model.grid, time_range=source.time_range,
                       npoint=source.npoint)
-    rec = Receiver(name='rec', grid=model.grid, ntime=receiver.nt,
+    rec = Receiver(name='rec', grid=model.grid, time_range=receiver.time_range,
                    npoint=receiver.npoint)
 
-    # Get computational time-step value
-    dt = model.critical_dt * (1.73 if time_order == 4 else 1.0)
-
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(u, time_order, model.m, s)
+    eqn = iso_stencil(u, kernel, model.m, s)
 
     # Construct expression to inject source values
-    src_term = src.inject(field=u.forward, expr=src * dt**2 / model.m,
+    src_term = src.inject(field=u.forward, expr=src * s**2 / model.m,
                           offset=model.nbpml)
 
     # Create interpolation expression for receivers
@@ -95,10 +82,11 @@ def ForwardOperator(model, source, receiver, time_order=2, space_order=4,
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + eq_abc + src_term + rec_term, subs=model.spacing_map,
-                    time_axis=Forward, name='Forward', **kwargs)
+                    name='Forward', **kwargs)
 
 
-def AdjointOperator(model, source, receiver, time_order=2, space_order=4, **kwargs):
+def AdjointOperator(model, source, receiver, space_order=4,
+                    kernel='OT2', **kwargs):
     """
     Constructor method for the adjoint modelling operator in an acoustic media
 
@@ -111,34 +99,31 @@ def AdjointOperator(model, source, receiver, time_order=2, space_order=4, **kwar
 
     v = TimeFunction(name='v', grid=model.grid, save=None,
                      time_order=2, space_order=space_order)
-    srca = PointSource(name='srca', grid=model.grid, ntime=source.nt,
+    srca = PointSource(name='srca', grid=model.grid, time_range=source.time_range,
                        npoint=source.npoint)
-    rec = Receiver(name='rec', grid=model.grid, ntime=receiver.nt,
+    rec = Receiver(name='rec', grid=model.grid, time_range=receiver.time_range,
                    npoint=receiver.npoint)
 
-    # Get computational time-step value
-    dt = model.critical_dt * (1.73 if time_order == 4 else 1.0)
-
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(v, time_order, model.m, s, forward=False)
+    eqn = iso_stencil(v, kernel, model.m, s, forward=False)
 
     # Construct expression to inject receiver values
-    receivers = rec.inject(field=v.backward, expr=rec * dt**2 / model.m,
+    receivers = rec.inject(field=v.backward, expr=rec * s**2 / model.m,
                            offset=model.nbpml)
 
     # Create interpolation expression for the adjoint-source
     source_a = srca.interpolate(expr=v, offset=model.nbpml)
 
-    BC = ABC(model, v, model.m, taxis=Backward)
+    BC = ABC(model, v, model.m, forward=False)
     eq_abc = BC.abc
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn + eq_abc + receivers + source_a, subs=model.spacing_map,
-                    time_axis=Backward, name='Adjoint', **kwargs)
+                    name='Adjoint', **kwargs)
 
 
-def GradientOperator(model, source, receiver, time_order=2, space_order=4, save=True,
-                     **kwargs):
+def GradientOperator(model, source, receiver, space_order=4, save=True,
+                     kernel='OT2', **kwargs):
     """
     Constructor method for the gradient operator in an acoustic media
 
@@ -155,32 +140,29 @@ def GradientOperator(model, source, receiver, time_order=2, space_order=4, save=
                      else None, time_order=2, space_order=space_order)
     v = TimeFunction(name='v', grid=model.grid, save=None,
                      time_order=2, space_order=space_order)
-    rec = Receiver(name='rec', grid=model.grid, ntime=receiver.nt,
-                   npoint=receiver.npoint)
-
-    # Get computational time-step value
-    dt = model.critical_dt * (1.73 if time_order == 4 else 1.0)
+    rec = Receiver(name='rec', grid=model.grid,
+                   time_range=receiver.time_range, npoint=receiver.npoint)
 
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(v, time_order, model.m, s, forward=False)
+    eqn = iso_stencil(v, kernel, model.m, s, forward=False)
 
-    if time_order == 2:
+    if kernel == 'OT2':
         gradient_update = Eq(grad, grad - u.dt2 * v)
-    else:
+    elif kernel == 'OT4':
         gradient_update = Eq(grad, grad - (u.dt2 +
                                            s**2 / 12.0 * u.laplace2(model.m**(-2))) * v)
 
     # Add expression for receiver injection
-    receivers = rec.inject(field=v.backward, expr=rec * dt**2 / model.m,
+    receivers = rec.inject(field=v.backward, expr=rec * s**2 / model.m,
                            offset=model.nbpml)
-    BC = ABC(model, v, model.m, taxis=Backward)
+    BC = ABC(model, v, model.m, forward=False)
     eq_abc = BC.abc
     # Substitute spacing terms to reduce flops
     return Operator(eqn + receivers + eq_abc + [gradient_update], subs=model.spacing_map,
-                    time_axis=Backward, name='Gradient', **kwargs)
+                    name='Gradient', **kwargs)
 
-
-def BornOperator(model, source, receiver, time_order=2, space_order=4, **kwargs):
+def BornOperator(model, source, receiver, space_order=4,
+                 kernel='OT2', **kwargs):
     """
     Constructor method for the Linearized Born operator in an acoustic media
 
@@ -192,9 +174,9 @@ def BornOperator(model, source, receiver, time_order=2, space_order=4, **kwargs)
     """
 
     # Create source and receiver symbols
-    src = PointSource(name='src', grid=model.grid, ntime=source.nt,
+    src = PointSource(name='src', grid=model.grid, time_range=source.time_range,
                       npoint=source.npoint)
-    rec = Receiver(name='rec', grid=model.grid, ntime=receiver.nt,
+    rec = Receiver(name='rec', grid=model.grid, time_range=receiver.time_range,
                    npoint=receiver.npoint)
 
     # Create wavefields and a dm field
@@ -202,17 +184,14 @@ def BornOperator(model, source, receiver, time_order=2, space_order=4, **kwargs)
                      time_order=2, space_order=space_order)
     U = TimeFunction(name="U", grid=model.grid, save=None,
                      time_order=2, space_order=space_order)
-    dm = Function(name="dm", grid=model.grid)
-
-    # Get computational time-step value
-    dt = model.critical_dt * (1.73 if time_order == 4 else 1.0)
+    dm = Function(name="dm", grid=model.grid, space_order=0)
 
     s = model.grid.stepping_dim.spacing
-    eqn1 = iso_stencil(u, time_order, model.m, s)
-    eqn2 = iso_stencil(U, time_order, model.m, s, q=-dm*u.dt2)
+    eqn1 = iso_stencil(u, kernel, model.m, s)
+    eqn2 = iso_stencil(U, kernel, model.m, s, q=-dm*u.dt2)
 
     # Add source term expression for u
-    source = src.inject(field=u.forward, expr=src * dt**2 / model.m,
+    source = src.inject(field=u.forward, expr=src * s**2 / model.m,
                         offset=model.nbpml)
 
     # Create receiver interpolation expression from U
@@ -223,4 +202,4 @@ def BornOperator(model, source, receiver, time_order=2, space_order=4, **kwargs)
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn1 + eq_abc + source + eqn2 + eq_abcl + receivers, subs=model.spacing_map,
-                    time_axis=Forward, name='Born', **kwargs)
+                    name='Born', **kwargs)

@@ -1,12 +1,13 @@
-import cgen as c
+from collections import OrderedDict
 import ctypes
 
-from devito.cgen_utils import INT, ccode
-from devito.ir.iet import Element, Expression, FindNodes, Transformer
+from devito.cgen_utils import INT
+from devito.ir.iet import Expression, ForeignExpression, FindNodes, Transformer
 from devito.symbolics import FunctionFromPointer, ListInitializer, retrieve_indexed
-from devito.tools import as_tuple
+from devito.tools import ctypes_pointer
 
-from devito.yask import namespace
+__all__ = ['make_grid_accesses', 'make_sharedptr_funcall', 'rawpointer',
+           'split_increment']
 
 
 def make_sharedptr_funcall(call, params, sharedptr):
@@ -43,10 +44,10 @@ def make_grid_accesses(node):
             args = [rhs]
             args += [ListInitializer([INT(make_grid_gets(i)) for i in lhs.indices])]
             handle = make_sharedptr_funcall(namespace['code-grid-put'], args, name)
-            processed = Element(c.Statement(ccode(handle)))
+            processed = ForeignExpression(handle, e.dtype, is_Increment=e.is_increment)
         else:
             # Writing to a scalar temporary
-            processed = Expression(e.expr.func(lhs, rhs), dtype=e.dtype)
+            processed = Expression(e.expr.func(lhs, rhs))
 
         mapper.update({e: processed})
 
@@ -58,92 +59,47 @@ def rawpointer(obj):
     return ctypes.cast(int(obj), ctypes.c_void_p)
 
 
-def convert_multislice(multislice, shape, offsets, mode='get'):
+def split_increment(expr):
     """
-    Convert a multislice into a format suitable to YASK's get_elements_{...}
-    and set_elements_{...} grid routines.
+    Split an increment of type: ::
 
-    A multislice is the typical object received by NumPy ndarray's __getitem__
-    and __setitem__ methods; this function, therefore, converts NumPy indices
-    into YASK indices.
+        u->set_element(v + u->get_element(indices), indices)
 
-    In particular, a multislice is either a single element or an iterable of
-    elements. An element can be a slice object, an integer index, or a tuple
-    of integer indices.
+    into its three main components, namely the target grid ``u``, the increment
+    value ``v``, and the :class:`ListInitializer` ``indices``.
 
-    In the general case in which ``multislice`` is an iterable, each element in
-    the iterable corresponds to a dimension in ``shape``. In this case, an element
-    can be either a slice or an integer index, but not a tuple of integers.
-
-    If ``multislice`` is a single element,  then it is interpreted as follows: ::
-
-        * slice object: the slice spans the whole shape;
-        * single (integer) index: shape is one-dimensional, and the index
-          represents a specific entry;
-        * a tuple of (integer) indices: it must be ``len(multislice) == len(shape)``,
-          and each entry in ``multislice`` corresponds to a specific entry in a
-          dimension in ``shape``.
-
-    The returned value is a 3-tuple ``(starts, ends, shapes)``, where ``starts,
-    ends, shapes`` are lists of length ``len(shape)``. By taking ``starts[i]`` and
-    `` ends[i]``, one gets the start and end points of the section of elements to
-    be accessed along dimension ``i``; ``shapes[i]`` gives the size of the section.
+    :raises ValueError: If ``expr`` is not an increment or does not appear in
+                        the normal form above.
     """
+    if not isinstance(expr, FunctionFromPointer) or len(expr.params) != 2:
+        raise ValueError
+    target = expr.pointer
+    expr, indices = expr.params
+    if not isinstance(indices, ListInitializer):
+        raise ValueError
+    if not expr.is_Add or len(expr.args) != 2:
+        raise ValueError
+    values = [i for i in expr.args if not isinstance(i, FunctionFromPointer)]
+    if not len(values) == 1:
+        raise ValueError
+    return target, values[0], indices
 
-    # Note: the '-1' below are because YASK uses '<=', rather than '<', to check
-    # bounds when iterating over grid dimensions
 
-    assert mode in ['get', 'set']
-    multislice = as_tuple(multislice)
-
-    # Convert dimensions
-    cstart = []
-    cstop = []
-    cshape = []
-    for i, v in enumerate(multislice):
-        if isinstance(v, slice):
-            if v.step is not None:
-                raise NotImplementedError("Unsupported stepping != 1.")
-            if v.start is None:
-                start = 0
-            elif v.start < 0:
-                start = shape[i] + v.start
-            else:
-                start = v.start
-            cstart.append(start)
-            if v.stop is None:
-                stop = shape[i] - 1
-            elif v.stop < 0:
-                stop = shape[i] + v.stop
-            else:
-                stop = v.stop
-            cstop.append(stop)
-            cshape.append(cstop[-1] - cstart[-1] + 1)
-        else:
-            if v is None:
-                start = 0
-                stop = shape[i] - 1
-            elif v < 0:
-                start = shape[i] + v
-                stop = shape[i] + v
-            else:
-                start = v
-                stop = v
-            cstart.append(start)
-            cstop.append(stop)
-            if mode == 'set':
-                cshape.append(1)
-
-    # Remainder (e.g., requesting A[1] and A has shape (3,3))
-    nremainder = len(shape) - len(multislice)
-    cstart.extend([0]*nremainder)
-    cstop.extend([shape[i + j] - 1 for j in range(1, nremainder + 1)])
-    cshape.extend([shape[i + j] for j in range(1, nremainder + 1)])
-
-    assert len(shape) == len(cstart) == len(cstop) == len(offsets)
-
-    # Shift by the specified offsets
-    cstart = [int(j + i) for i, j in zip(offsets, cstart)]
-    cstop = [int(j + i) for i, j in zip(offsets, cstop)]
-
-    return cstart, cstop, cshape
+# YASK conventions
+namespace = OrderedDict()
+namespace['jit-yc-hook'] = lambda i, j: 'devito_%s_yc_hook%d' % (i, j)
+namespace['jit-yk-hook'] = lambda i, j: 'devito_%s_yk_hook%d' % (i, j)
+namespace['jit-yc-soln'] = lambda i, j: 'devito_%s_yc_soln%d' % (i, j)
+namespace['jit-yk-soln'] = lambda i, j: 'devito_%s_yk_soln%d' % (i, j)
+namespace['kernel-filename'] = 'yask_stencil_code.hpp'
+namespace['code-soln-type'] = 'yask::yk_solution'
+namespace['code-soln-name'] = 'soln'
+namespace['code-soln-run'] = 'run_solution'
+namespace['code-grid-type'] = 'yask::yk_grid'
+namespace['code-grid-name'] = lambda i: "grid_%s" % str(i)
+namespace['code-grid-get'] = 'get_element'
+namespace['code-grid-put'] = 'set_element'
+namespace['code-grid-add'] = 'add_to_element'
+namespace['type-solution'] = ctypes_pointer('yask::yk_solution_ptr')
+namespace['type-grid'] = ctypes_pointer('yask::yk_grid_ptr')
+namespace['numa-put-local'] = -1
