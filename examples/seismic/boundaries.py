@@ -2,10 +2,10 @@ from __future__ import division
 
 import numpy as np
 
-from devito import Dimension, Function
+from devito import Dimension, Function, SubDimension, Eq
 from devito.exceptions import InvalidArgument
 
-from sympy import Eq
+from sympy import sqrt, solve
 
 __all__ = ['ABC']
 
@@ -21,15 +21,15 @@ class ABC(object):
     :param taxis : Forward or Backward, defines the propagation axis
     """
 
-    def __init__(self, model, field, m, forward=True, **kwargs):
+    def __init__(self, model, field, forward=True, **kwargs):
         self.nbpml = int(model.nbpml)
         self.full_shape = model.shape_domain
         self.p_abc = Dimension(name="abc")
         self.ndim = model.dim
-        self.indices = field.indices[1:]
+        self.indices = field.grid.dimensions
         self.field = field
         self.tindex = self.field.grid.time_dim
-        self.m = m
+        self.m = model.m
         self.forward = forward
         self.freesurface = kwargs.get("freesurface", False)
         self.damp_profile = self.damp_profile_init()
@@ -41,11 +41,15 @@ class ABC(object):
         :param val: symbolic value of the dampening profile
         :return: Symbolic equation inside the boundary layer
         """
-        s = self.tindex.spacing
+        # Define time sep to be updated
         next = self.field.forward if self.forward else self.field.backward
-        prev = self.field.backward if self.forward else self.field.forward
-        return Eq(next, self.m / (self.m + s * self.damp_profile) * next +
-                  s * self.damp_profile / (self.m + s * self.damp_profile) * prev)
+        # Define PDE
+        eq = self.m * self.field.dt2 - self.field.laplace + self.damp_profile * self.field.dt
+        # Solve the symbolic equation for the field to be updated
+        eq_time = solve(eq, next, rational=False, simplify=False)[0]
+        # return the Stencil with H replaced by its symbolic expression
+        return Eq(next, eq_time)
+
 
     @property
     def free_surface(self):
@@ -76,11 +80,13 @@ class ABC(object):
         Dampening profile along a single direction
         :return:
         """
-        profile = [1 - np.exp(-(0.004*pos)**2) for pos in range(self.nbpml-1, -1, -1)]
+        coeff = 1.5 * np.log(1.0 / 0.001) / (40.)
+        profile = [coeff * (pos - np.sin(2*np.pi*pos)/(2*np.pi)) for pos in np.linspace(1.0, 0.0, self.nbpml)]
         # second order would be 1/250*pos)**2 *(1 + 1/2*(1/250*pos)*(1/250*pos))
         # profile = [(1 / 250 * pos) * (1 / 250 * pos) for pos in range(self.nbpml-1,0,-1)]
-        damp = Function(name="damp", shape=(self.nbpml,), dimensions=(self.p_abc,), dtype=np.float32)
-        damp.data[:] = profile
+        damp = Function(name="damp", shape=(self.nbpml,), dimensions=(self.p_abc,), dtype=np.float32,
+                        space_order=0)
+        damp.data[:] = profile / self.field.grid.spacing[0]
         return damp
 
     def damp_x(self):

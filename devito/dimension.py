@@ -312,7 +312,7 @@ class SubDimension(DerivedDimension):
         values = {}
         values[self.min_name] = args[self.parent.min_name] + self.lower
         values[self.max_name] = args[self.parent.max_name] + self.upper
-        values[self.size_name] = args[self.parent.size_name] - (self.lower + self.upper)
+        values[self.size_name] = args[self.parent.size_name] - (self.lower - self.upper)
         return values
 
 

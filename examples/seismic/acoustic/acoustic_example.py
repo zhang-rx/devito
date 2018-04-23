@@ -68,9 +68,9 @@ def run(shape=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
     import matplotlib.pyplot as plt
 
     plt.figure()
-    plt.imshow(rec.data[:, :], vmin=-10, vmax=10, cmap="seismic", aspect=.2)
+    plt.imshow(rec.data[:, :], vmin=-1, vmax=1, cmap="seismic", aspect=.2)
     plt.figure()
-    plt.imshow(np.transpose(u.data[-1, 90, :, :]), vmin=-1, vmax=1, cmap="seismic", aspect=1)
+    plt.imshow(np.transpose(u.data[-1, :, :]), vmin=-1, vmax=1, cmap="seismic", aspect=1)
     plt.show()
 
     if constant:
@@ -122,11 +122,11 @@ if __name__ == "__main__":
     if args.dim2:
         shape = (150, 150)
         spacing = (15.0, 15.0)
-        tn = 500.0
+        tn = 1700.0
     else:
         shape = (100, 100, 100)
         spacing = (15.0, 15.0, 15.0)
-        tn = 500.0
+        tn = 1000.0
 
     run(shape=shape, spacing=spacing, nbpml=args.nbpml, tn=tn,
         space_order=args.space_order, constant=args.constant, kernel=args.kernel,

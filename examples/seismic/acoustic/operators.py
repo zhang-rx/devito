@@ -1,9 +1,20 @@
 from sympy import solve, Symbol
 
-from devito import Eq, Operator, Function, TimeFunction
+from devito import Eq, Operator, Function, TimeFunction, SubDimension
 from devito.logger import error
 from examples.seismic import PointSource, Receiver, ABC
 
+
+def inner_ind(model):
+    """
+    Dimensions of the inner part of the domain without ABC layers
+    """
+    sub_dim =[]
+    for dim in model.grid.dimensions:
+        sub_dim += [SubDimension(name=dim.name + '_in', parent=dim,
+                                 lower=model.nbpml, upper=-model.nbpml)]
+
+    return tuple(sub_dim)
 
 def laplacian(field, m, s, kernel):
     """
@@ -19,7 +30,7 @@ def laplacian(field, m, s, kernel):
     biharmonic = field.laplace2(1/m) if kernel == 'OT4' else 0
     return field.laplace + s**2/12 * biharmonic
 
-def iso_stencil(field, kernel, m, s, **kwargs):
+def iso_stencil(field, kernel, model, s, **kwargs):
     """
     Stencil for the acoustic isotropic wave-equation:
     u.dt2 - H + damp*u.dt = 0
@@ -37,13 +48,14 @@ def iso_stencil(field, kernel, m, s, **kwargs):
     # Define time sep to be updated
     next = field.forward if kwargs.get('forward', True) else field.backward
     # Define PDE
-    eq = m * field.dt2 - H - kwargs.get('q', 0)
+    eq = model.m * field.dt2 - H - kwargs.get('q', 0)
     # Solve the symbolic equation for the field to be updated
     eq_time = solve(eq, next, rational=False, simplify=False)[0]
     # Get the spacial FD
-    lap = laplacian(field, m, s, kernel)
+    lap = laplacian(field, model.m, s, kernel)
     # return the Stencil with H replaced by its symbolic expression
-    return [Eq(next, eq_time.subs({H: lap}))]
+    inner = [(i, i_in) for i, i_in in zip(model.grid.dimensions, inner_ind(model))]
+    return [Eq(next, eq_time.subs({H: lap})).subs(inner)]
 
 
 def ForwardOperator(model, source, receiver, space_order=4,
@@ -68,7 +80,7 @@ def ForwardOperator(model, source, receiver, space_order=4,
                    npoint=receiver.npoint)
 
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(u, kernel, model.m, s)
+    eqn = iso_stencil(u, kernel, model, s)
 
     # Construct expression to inject source values
     src_term = src.inject(field=u.forward, expr=src * s**2 / model.m,
@@ -105,7 +117,7 @@ def AdjointOperator(model, source, receiver, space_order=4,
                    npoint=receiver.npoint)
 
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(v, kernel, model.m, s, forward=False)
+    eqn = iso_stencil(v, kernel, model, s, forward=False)
 
     # Construct expression to inject receiver values
     receivers = rec.inject(field=v.backward, expr=rec * s**2 / model.m,
@@ -144,7 +156,7 @@ def GradientOperator(model, source, receiver, space_order=4, save=True,
                    time_range=receiver.time_range, npoint=receiver.npoint)
 
     s = model.grid.stepping_dim.spacing
-    eqn = iso_stencil(v, kernel, model.m, s, forward=False)
+    eqn = iso_stencil(v, kernel, model, s, forward=False)
 
     if kernel == 'OT2':
         gradient_update = Eq(grad, grad - u.dt2 * v)
@@ -187,8 +199,8 @@ def BornOperator(model, source, receiver, space_order=4,
     dm = Function(name="dm", grid=model.grid, space_order=0)
 
     s = model.grid.stepping_dim.spacing
-    eqn1 = iso_stencil(u, kernel, model.m, s)
-    eqn2 = iso_stencil(U, kernel, model.m, s, q=-dm*u.dt2)
+    eqn1 = iso_stencil(u, kernel, model, s)
+    eqn2 = iso_stencil(U, kernel, model, s, q=-dm*u.dt2)
 
     # Add source term expression for u
     source = src.inject(field=u.forward, expr=src * s**2 / model.m,
