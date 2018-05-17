@@ -217,16 +217,6 @@ class YaskContext(object):
         self.solutions = []
         self.grids = {}
 
-        # Build the hook kernel solution (wrapper) to create grids
-        yc_hook = self.make_yc_solution(namespace['jit-yc-hook'])
-        # Need to add dummy grids to make YASK happy
-        # TODO: improve me
-        handle = [nfac.new_domain_index(str(i)) for i in self.space_dimensions]
-        yc_hook.new_grid('dummy_wo_time', handle)
-        handle = [nfac.new_step_index(str(self.time_dimension))] + handle
-        yc_hook.new_grid('dummy_w_time', handle)
-        self.yk_hook = YaskKernel(namespace['jit-yk-hook'](name, 0), yc_hook)
-
     @property
     def dimensions(self):
         return (self.time_dimension,) + self.space_dimensions
@@ -251,7 +241,15 @@ class YaskContext(object):
 
         name = 'devito_%s_%d' % (obj.name, contexts.ngrids)
 
-        # Create the YASK grid
+        # Create the YASK grid. A "hook" compiler and kernel solutions are
+        # required
+        yc_hook = self.make_yc_solution(namespace['jit-yc-hook'])
+        handle = [nfac.new_domain_index(str(i)) for i in self.space_dimensions]
+        yc_hook.new_grid('dummy_wo_time', handle)
+        handle = [nfac.new_step_index(str(self.time_dimension))] + handle
+        yc_hook.new_grid('dummy_w_time', handle)
+        self.yk_hook = YaskKernel(namespace['jit-yk-hook'](name, 0), yc_hook)
+
         grid = self.yk_hook.new_grid(name, obj)
 
         # Where should memory be allocated ?
