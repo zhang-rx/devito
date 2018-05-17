@@ -8,8 +8,9 @@ from devito.compiler import make
 from devito.exceptions import CompilationError
 from devito.logger import debug, yask as log
 
-from devito.yask import cfac, nfac, ofac, exit, configuration
+from devito.yask import cfac, ofac, exit, configuration
 from devito.yask.utils import namespace, rawpointer
+from devito.yask.transformer import make_yask_ast
 
 
 class YaskKernel(object):
@@ -252,13 +253,15 @@ class YaskContext(object):
         # Create the YASK grid. A "hook" compiler and kernel solutions are
         # required
         yc_hook = self.make_yc_solution(namespace['jit-yc-hook'])
-        handle = [nfac.new_domain_index(str(i)) for i in self.space_dimensions]
-        yc_hook.new_grid('dummy_wo_time', handle)
-        handle = [nfac.new_step_index(str(self.time_dimension))] + handle
-        yc_hook.new_grid('dummy_w_time', handle)
-        self.yk_hook = YaskKernel(namespace['jit-yk-hook'](name, 0), yc_hook)
-
-        grid = self.yk_hook.new_grid(name, obj)
+        dimensions = [make_yask_ast(i, yc_hook, {}) for i in obj.indices]
+        yc_hook.new_grid('dummy_grid', dimensions)
+        # TODO: drop the following when YASK will be patched to allow grids
+        # w/o a step dimension
+        if all(not i.is_Time for i in obj.indices):
+            dimensions = [make_yask_ast(self.time_dimension, yc_hook, {})] + dimensions
+            yc_hook.new_grid('dummy_grid_wstep', dimensions)
+        yk_hook = YaskKernel(namespace['jit-yk-hook'](self.name, 0), yc_hook)
+        grid = yk_hook.new_grid(name, obj)
 
         # Where should memory be allocated ?
         alloc = obj._allocator
@@ -307,7 +310,7 @@ class YaskContext(object):
 
         # Apply compile-time optimizations
         if configuration['isa'] != 'cpp':
-            dimensions = [nfac.new_domain_index(str(i)) for i in self.space_dimensions]
+            dimensions = [make_yask_ast(i, yc_soln, {}) for i in self.space_dimensions]
             # Vector folding
             for i, j in zip(dimensions, configuration.yask['folding']):
                 yc_soln.set_fold_len(i, j)
