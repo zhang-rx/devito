@@ -26,6 +26,7 @@ dependencies:
   - pytest-cov
   - multidict
   - frozendict
+  - ccache==3.3.2
   - pip:
     - "git+https://github.com/inducer/codepy"
     - "git+https://github.com/opesci/pyrevolve"
