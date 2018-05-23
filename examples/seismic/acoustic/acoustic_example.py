@@ -67,7 +67,13 @@ def run(shape=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
     save = full_run and not checkpointing
     # Define receiver geometry (spread across x, just below surface)
     rec, u, summary = solver.forward(save=save, autotune=autotune)
+    import matplotlib.pyplot as plt
 
+    plt.figure()
+    plt.imshow(rec.data[:, :], vmin=-1, vmax=1, cmap="seismic", aspect=.2)
+    plt.figure()
+    plt.imshow(np.transpose(u.data[-1, :, :]), vmin=-1, vmax=1, cmap="seismic", aspect=1)
+    plt.show()
     if constant:
         # With  a new m as Constant
         m0 = Constant(name="m", value=.25, dtype=np.float32)
@@ -116,9 +122,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 3D preset parameters
-    shape = tuple(args.ndim * [51])
+    shape = tuple(args.ndim * [151])
     spacing = tuple(args.ndim * [15.0])
-    tn = 750. if args.ndim < 3 else 250.
+    tn = 1050. if args.ndim < 3 else 250.
 
     run(shape=shape, spacing=spacing, nbpml=args.nbpml, tn=tn,
         space_order=args.space_order, constant=args.constant, kernel=args.kernel,

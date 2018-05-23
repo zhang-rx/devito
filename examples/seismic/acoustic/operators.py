@@ -2,7 +2,7 @@ from sympy import solve, Symbol
 
 from devito import Eq, Operator, Function, TimeFunction, SubDimension
 from devito.logger import error
-from examples.seismic import PointSource, Receiver, ABC
+from examples.seismic import PointSource, Receiver, ABC, Clayton
 
 
 def inner_ind(model):
@@ -89,9 +89,11 @@ def ForwardOperator(model, source, receiver, space_order=4,
     # Create interpolation expression for receivers
     rec_term = rec.interpolate(expr=u, offset=model.nbpml)
 
-    BC = ABC(model, u, model.m)
-    eq_abc = BC.abc
+    # BC = ABC(model, u)
+    # eq_abc = BC.abc
 
+    BC = Clayton(model, u, freesurface=True)
+    eq_abc = BC.abc_clayton
     # Substitute spacing terms to reduce flops
     return Operator(eqn + eq_abc + src_term + rec_term, subs=model.spacing_map,
                     name='Forward', **kwargs)
