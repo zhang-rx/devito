@@ -11,8 +11,8 @@ def inner_ind(model):
     """
     sub_dim =[]
     for dim in model.grid.dimensions:
-        sub_dim += [SubDimension(name=dim.name + '_in', parent=dim,
-                                 lower=model.nbpml, upper=-model.nbpml)]
+        sub_dim += [SubDimension.middle(name=dim.name + '_in', parent=dim,
+                                 thickness_left=model.nbpml, thickness_right=model.nbpml)]
 
     return tuple(sub_dim)
 
