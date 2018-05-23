@@ -14,9 +14,9 @@ from devito.dle import fold_blockable_tree, unfold_blocked_tree
 from devito.dle.backends import (BasicRewriter, BlockingArg, Ompizer, dle_pass,
                                  simdinfo, get_simd_flag, get_simd_items)
 from devito.exceptions import DLEException
-from devito.ir.iet import (Iteration, List, PARALLEL, ELEMENTAL, REMAINDER, tagger,
-                           FindSymbols, IsPerfectIteration, Transformer, compose_nodes,
-                           retrieve_iteration_tree)
+from devito.ir.iet import (Expression, Iteration, List, PARALLEL, ELEMENTAL, REMAINDER,
+                           tagger, FindSymbols, FindNodes, IsPerfectIteration,
+                           Transformer, compose_nodes, retrieve_iteration_tree)
 from devito.logger import dle_warning
 from devito.tools import as_tuple
 
@@ -98,8 +98,8 @@ class AdvancedRewriter(BasicRewriter):
                 dim = blocked.setdefault(i, Dimension(name=name))
                 bsize = dim.symbolic_size
                 bstart = i.limits[0]
-                binnersize = i.dim.symbolic_extent + (i.offsets[1] - i.offsets[0])
-                bfinish = i.dim.symbolic_end - (binnersize % bsize) - 1
+                binnersize = i.symbolic_extent + (i.offsets[1] - i.offsets[0])
+                bfinish = i.dim.symbolic_end - (binnersize % bsize)
                 inter_block = Iteration([], dim, [bstart, bfinish, bsize],
                                         offsets=i.offsets, properties=PARALLEL)
                 inter_blocks.append(inter_block)
@@ -235,8 +235,8 @@ class AdvancedRewriter(BasicRewriter):
                 continue
 
             # Padding
-            writes = [i for i in FindSymbols('symbolics-writes').visit(root)
-                      if i.is_Array]
+            writes = [i.write for i in FindNodes(Expression).visit(root)
+                      if i.write.is_Array]
             padding = []
             for i in writes:
                 try:
@@ -255,7 +255,7 @@ class AdvancedRewriter(BasicRewriter):
                 continue
 
             # Dynamic trip count adjustment
-            endpoint = root.end_symbolic
+            endpoint = root.symbolic_end
             if not endpoint.is_Symbol:
                 continue
             condition = []
@@ -263,7 +263,7 @@ class AdvancedRewriter(BasicRewriter):
                             if i.is_Tensor)
             for i in root.uindices:
                 for j in externals:
-                    condition.append(root.end_symbolic + padding < j)
+                    condition.append(root.symbolic_end + padding < j)
             condition = ' && '.join(ccode(i) for i in condition)
             endpoint_padded = endpoint.func('_%s' % endpoint.name)
             init = cgen.Initializer(

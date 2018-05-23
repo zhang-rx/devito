@@ -209,11 +209,13 @@ class CGen(Visitor):
         return o.element
 
     def visit_Expression(self, o):
-        return c.Assign(ccode(o.expr.lhs), ccode(o.expr.rhs))
+        return c.Assign(ccode(o.expr.lhs, dtype=o.dtype),
+                        ccode(o.expr.rhs, dtype=o.dtype))
 
     def visit_LocalExpression(self, o):
         return c.Initializer(c.Value(c.dtype_to_ctype(o.dtype),
-                             ccode(o.expr.lhs)), ccode(o.expr.rhs))
+                             ccode(o.expr.lhs, dtype=o.dtype)),
+                             ccode(o.expr.rhs, dtype=o.dtype))
 
     def visit_ForeignExpression(self, o):
         return c.Statement(ccode(o.expr))
@@ -403,13 +405,11 @@ class FindSymbols(Visitor):
     :param mode: Drive the search. Accepted values are: ::
 
         * 'symbolics': Collect :class:`AbstractSymbol` objects.
-        * 'symbolics-writes': Collect written :class:`AbstractSymbol` objects.
         * 'free-symbols': Collect all free symbols.
     """
 
     rules = {
         'symbolics': lambda e: e.functions,
-        'symbolics-writes': lambda e: as_tuple(e.write),
         'free-symbols': lambda e: e.free_symbols,
         'defines': lambda e: as_tuple(e.defines),
     }
