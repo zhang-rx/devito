@@ -24,7 +24,6 @@ class ABC(object):
     def __init__(self, model, field, forward=True, **kwargs):
         self.nbpml = int(model.nbpml)
         self.full_shape = model.shape_domain
-        self.p_abc = Dimension(name="abc")
         self.ndim = model.dim
         self.indices = field.grid.dimensions
         self.field = field
@@ -32,10 +31,8 @@ class ABC(object):
         self.m = model.m
         self.forward = forward
         self.freesurface = kwargs.get("freesurface", False)
-        self.damp_profile = self.damp_profile_init()
 
-    @property
-    def abc_eq(self):
+    def abc_eq(self, abc_dim, left=True):
         """
         Equation of the absorbing boundary condition as a complement of the PDE
         :param val: symbolic value of the dampening profile
@@ -44,23 +41,27 @@ class ABC(object):
         # Define time sep to be updated
         next = self.field.forward if self.forward else self.field.backward
         # Define PDE
-        eq = self.m * self.field.dt2 - self.field.laplace + self.damp_profile * self.field.dt
+        eta = self.damp_profile_init(abc_dim, left=left)
+        eq = self.m * self.field.dt2 - self.field.laplace
+        eq += eta * self.field.dt if self.forward else -eta * self.field.dt
         # Solve the symbolic equation for the field to be updated
         eq_time = solve(eq, next, rational=False, simplify=False)[0]
         # return the Stencil with H replaced by its symbolic expression
-        return Eq(next, eq_time)
+        return Eq(next, eq_time).subs({abc_dim.parent: abc_dim})
 
 
     @property
     def free_surface(self):
         """
         Free surface expression. Mirrors the negative wavefield above the sea level
-        :return: SYmbolic equation of the free surface
+        :return: Symbolic equation of the free surface
         """
-        ind_fs = self.field.indices[-1]
+        dim = self.field.indices[-1]
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
         next = self.field.forward if self.forward else self.field.backward
-        return [Eq(next.subs({ind_fs: self.p_abc}),
-                   - next.subs({ind_fs: 2*self.nbpml - self.p_abc}))]
+        return [Eq(next.subs({dim: dim_abc_left}), - next.subs({dim: 2*self.nbpml - dim_abc_left})),
+                self.abc_eq(dim_abc_right, left=False)]
 
     @property
     def abc(self):
@@ -68,62 +69,73 @@ class ABC(object):
         Complete set of expressions for the ABC layers
         :return:
         """
-        if self.ndim == 2:
-            return self.damp_2d()
+        if self.ndim == 1:
+            return self.damp_x
+        elif self.ndim == 2:
+            return self.damp_2d
         elif self.ndim == 3:
-            return self.damp_3d()
+            return self.damp_3d
         else:
             raise InvalidArgument("Unsupported model shape")
 
-    def damp_profile_init(self):
+    def damp_profile_init(self, abc_dim, left=True):
         """
         Dampening profile along a single direction
         :return:
         """
+        positions = np.linspace(1.0, 0.0, self.nbpml) if left else np.linspace(0.0, 1.0, self.nbpml)
         coeff = 1.5 * np.log(1.0 / 0.001) / (40.)
-        profile = [coeff * (pos - np.sin(2*np.pi*pos)/(2*np.pi)) for pos in np.linspace(1.0, 0.0, self.nbpml)]
-        # second order would be 1/250*pos)**2 *(1 + 1/2*(1/250*pos)*(1/250*pos))
-        # profile = [(1 / 250 * pos) * (1 / 250 * pos) for pos in range(self.nbpml-1,0,-1)]
-        damp = Function(name="damp", shape=(self.nbpml,), dimensions=(self.p_abc,), dtype=np.float32,
-                        space_order=0)
-        damp.data[:] = profile / self.field.grid.spacing[0]
-        return damp
+        profile = [coeff * (pos - np.sin(2*np.pi*pos)/(2*np.pi)) for pos in positions]
+        damp = Function(name="damp" + abc_dim.name, shape=(self.nbpml,), dimensions=(abc_dim,), dtype=np.float32, space_order=0)
+        damp.data[:] = damp.dtype(profile / self.field.grid.spacing[0])
+        return damp.subs({damp.indices[0]: damp.indices[0]- damp.indices[0].symbolic_start})
 
+    @property
     def damp_x(self):
         """
         Dampening profile along x
         :return:
         """
-        return [self.abc_eq.subs({self.indices[0]: self.p_abc}),
-                self.abc_eq.subs({self.indices[0]: self.full_shape[0] - 1 - self.p_abc})]
+        dim = self.indices[0]
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
+    @property
     def damp_y(self):
         """
         Dampening profile along y
         :return:
         """
-        return [self.abc_eq.subs({self.indices[1]: self.p_abc}),
-                self.abc_eq.subs({self.indices[1]: self.full_shape[1] - 1 - self.p_abc})]
+        dim = self.indices[1]
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
+    @property
     def damp_z(self):
         """
         Dampening profile along y
         :return:
         """
-        return [self.abc_eq.subs({self.indices[2]: self.p_abc}),
-                self.abc_eq.subs({self.indices[2]: self.full_shape[2] - 1 - self.p_abc})]
+        dim = self.indices[2]
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
+    @property
     def damp_2d(self):
         """
         Dampening profiles in 2D w/ w/o freesurface
         :return:
         """
-        return self.damp_x() + (self.free_surface if self.freesurface else self.damp_y())
+        return self.damp_x + (self.free_surface if self.freesurface else self.damp_y)
 
+    @property
     def damp_3d(self):
         """
         Dampening profiles in 2D w/ w/o freesurface
         :return:
         """
-        return self.damp_x() + self.damp_y() +\
-            (self.free_surface if self.freesurface else self.damp_z())
+        return self.damp_x + self.damp_y +\
+            (self.free_surface if self.freesurface else self.damp_z)

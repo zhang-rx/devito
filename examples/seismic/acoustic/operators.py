@@ -126,7 +126,7 @@ def AdjointOperator(model, source, receiver, space_order=4,
     # Create interpolation expression for the adjoint-source
     source_a = srca.interpolate(expr=v, offset=model.nbpml)
 
-    BC = ABC(model, v, model.m, forward=False)
+    BC = ABC(model, v, forward=False)
     eq_abc = BC.abc
 
     # Substitute spacing terms to reduce flops
@@ -167,7 +167,7 @@ def GradientOperator(model, source, receiver, space_order=4, save=True,
     # Add expression for receiver injection
     receivers = rec.inject(field=v.backward, expr=rec * s**2 / model.m,
                            offset=model.nbpml)
-    BC = ABC(model, v, model.m, forward=False)
+    BC = ABC(model, v, forward=False)
     eq_abc = BC.abc
     # Substitute spacing terms to reduce flops
     return Operator(eqn + receivers + eq_abc + [gradient_update], subs=model.spacing_map,
@@ -209,8 +209,8 @@ def BornOperator(model, source, receiver, space_order=4,
     # Create receiver interpolation expression from U
     receivers = rec.interpolate(expr=U, offset=model.nbpml)
 
-    eq_abc = ABC(model, u, model.m).abc
-    eq_abcl = ABC(model, U, model.m).abc
+    eq_abc = ABC(model, u).abc
+    eq_abcl = ABC(model, U).abc
 
     # Substitute spacing terms to reduce flops
     return Operator(eqn1 + eq_abc + source + eqn2 + eq_abcl + receivers, subs=model.spacing_map,

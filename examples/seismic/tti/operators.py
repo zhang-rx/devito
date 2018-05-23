@@ -400,15 +400,15 @@ def ForwardOperator(model, source, receiver, space_order=4,
 
     # Stencils
     s = model.grid.stepping_dim.spacing
-         
+
     stencilp = s ** 2 / m * (epsilon * H0 + delta * Hz) - u.backward + 2 * u
     stencilr = s ** 2 / m * (delta * H0 + Hz) - v.backward + 2 * v
     first_stencil = Eq(u.forward, stencilp)
     second_stencil = Eq(v.forward, stencilr)
     stencils = [first_stencil, second_stencil]
-    
-    stencils += ABC(model, v, m).abc
-    stencils += ABC(model, u, m).abc
+
+    stencils += ABC(model, v).abc
+    stencils += ABC(model, u).abc
 
     # Source and receivers
     stencils += src.inject(field=u.forward, expr=src * dt**2 / (m * u.grid.volume_cell),
