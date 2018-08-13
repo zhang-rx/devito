@@ -194,6 +194,7 @@ class ClusterizedEq(Eq, IREq, FrozenExpr, Pickable):
                 setattr(expr, '_%s' % i, kwargs.get(i) or getattr(input_expr, i))
             assert isinstance(expr.ispace, IterationSpace)
             assert isinstance(expr.dspace, DataSpace)
+            expr.original = input_expr
         elif len(args) == 2:
             # origin: ClusterizedEq(lhs, rhs, **kwargs)
             expr = Eq.__new__(cls, *args, evaluate=False)

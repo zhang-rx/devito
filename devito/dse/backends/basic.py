@@ -24,6 +24,7 @@ class BasicRewriter(AbstractRewriter):
         make = lambda: Scalar(name=template(), dtype=np.int32).indexify()
 
         mapper = OrderedDict()
+        
         for e in cluster.exprs:
             # Note: using mode='all' and then checking for presence in the mapper
             # (a few lines below), rather retrieving unique indexeds only (a set),
@@ -64,7 +65,6 @@ class BasicRewriter(AbstractRewriter):
         Perform common subexpression elimination, bypassing the tensor expressions
         extracted in previous passes.
         """
-
         skip = [e for e in cluster.exprs if e.lhs.base.function.is_Array]
         candidates = [e for e in cluster.exprs if e not in skip]
 

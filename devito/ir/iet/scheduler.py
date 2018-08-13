@@ -41,7 +41,7 @@ def iet_make(stree):
 
         elif i.is_Exprs:
             exprs = [Expression(e) for e in i.exprs]
-            body = [ExpressionBundle(i.shape, i.ops, i.traffic, body=exprs)]
+            body = [ExpressionBundle(i.shape, i.ops, i.traffic, body=exprs, orig=i.orig)]
 
         elif i.is_Conditional:
             body = [Conditional(i.guard, queues.pop(i))]

@@ -256,5 +256,7 @@ def clusterize(exprs):
 
     # Introduce conditional PartialClusters
     clusters = guard(clusters)
+    for c in clusters:
+        c.orig = c.exprs[0].original
 
     return clusters.finalize()

@@ -28,12 +28,13 @@ class PartialCluster(object):
                    under which ``exprs`` are evaluated.
     """
 
-    def __init__(self, exprs, ispace, dspace, atomics=None, guards=None):
+    def __init__(self, exprs, ispace, dspace, atomics=None, guards=None, orig=None):
         self._exprs = list(ClusterizedEq(i, ispace=ispace, dspace=dspace) for i in exprs)
         self._ispace = ispace
         self._dspace = dspace
         self._atomics = set(atomics or [])
         self._guards = guards or {}
+        self.orig=orig
 
     @property
     def exprs(self):
@@ -69,7 +70,7 @@ class PartialCluster(object):
 
     @property
     def args(self):
-        return (self.exprs, self.ispace, self.dspace, self.atomics, self.guards)
+        return (self.exprs, self.ispace, self.dspace, self.atomics, self.guards, self.orig)
 
     @property
     def trace(self):
@@ -164,7 +165,7 @@ class Cluster(PartialCluster):
 
     """A Cluster is an immutable :class:`PartialCluster`."""
 
-    def __init__(self, exprs, ispace, dspace, atomics=None, guards=None):
+    def __init__(self, exprs, ispace, dspace, atomics=None, guards=None, orig=None):
         self._exprs = exprs
         # Keep expressions ordered based on information flow
         self._exprs = tuple(ClusterizedEq(v, ispace=ispace, dspace=dspace)
@@ -173,6 +174,7 @@ class Cluster(PartialCluster):
         self._dspace = dspace
         self._atomics = frozenset(atomics or ())
         self._guards = frozendict(guards or {})
+        self.orig=orig
 
     @cached_property
     def trace(self):
@@ -191,7 +193,9 @@ class Cluster(PartialCluster):
         Build a new cluster with expressions ``exprs`` having same iteration
         space and atomics as ``self``.
         """
-        return Cluster(exprs, self.ispace, self.dspace, self.atomics, self.guards)
+        c = Cluster(exprs, self.ispace, self.dspace, self.atomics, self.guards)
+        c.orig = self.orig
+        return c
 
     @PartialCluster.exprs.setter
     def exprs(self, val):
@@ -230,6 +234,7 @@ class ClusterGroup(list):
         for i in self:
             if isinstance(i, PartialCluster):
                 cluster = Cluster(*i.args)
+                cluster.orig = i.orig
                 clusters.append(cluster)
             else:
                 clusters.append(i)

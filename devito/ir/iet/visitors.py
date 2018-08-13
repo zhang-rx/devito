@@ -274,6 +274,9 @@ class CGen(Visitor):
         if o.pragmas:
             handle = c.Module(o.pragmas + (handle,))
 
+        if o.annotations:
+            handle = c.Module([c.MultilineComment("\n".join(o.annotations)), handle])
+
         return handle
 
     def visit_Callable(self, o):
@@ -599,7 +602,10 @@ class Transformer(Visitor):
                 extended = (tuple(handle) + o.children[0],) + o.children[1:]
                 return o._rebuild(*extended, **o.args_frozen)
             else:
-                return handle._rebuild(**handle.args)
+                args = handle.args
+                if hasattr(handle, 'nodes'):
+                    args['nodes'] = [self.visit(i, **kwargs) for i in handle.nodes]
+                return handle._rebuild(**args)
         else:
             rebuilt = [self.visit(i, **kwargs) for i in o.children]
             return o._rebuild(*rebuilt, **o.args_frozen)

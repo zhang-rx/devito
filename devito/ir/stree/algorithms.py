@@ -24,7 +24,6 @@ def st_build(clusters):
 
     # Add in halo update nodes
     stree = st_make_halo(stree)
-
     return stree
 
 
@@ -62,7 +61,7 @@ def st_schedule(clusters):
             mapper[i] = root
 
         # Add in Expressions
-        NodeExprs(c.exprs, c.shape, c.ops, c.traffic, root)
+        NodeExprs(c.exprs, c.shape, c.ops, c.traffic, root, orig=c.orig)
 
         # Add in Conditionals
         for k, v in mapper.items():

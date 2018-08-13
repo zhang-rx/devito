@@ -332,7 +332,7 @@ class Iteration(Node):
     _traversable = ['nodes']
 
     def __init__(self, nodes, dimension, limits, index=None, offsets=None,
-                 direction=None, properties=None, pragmas=None, uindices=None):
+                 direction=None, properties=None, pragmas=None, uindices=None, annotations=None):
         self.nodes = as_tuple(nodes)
         self.dim = dimension
         self.index = index or self.dim.name
@@ -356,6 +356,7 @@ class Iteration(Node):
         self.pragmas = as_tuple(pragmas)
         self.uindices = as_tuple(uindices)
         assert all(i.is_Derived and i.root is dimension for i in self.uindices)
+        self.annotations = annotations
 
     def __repr__(self):
         properties = ""
@@ -823,11 +824,12 @@ class ExpressionBundle(List):
 
     is_ExpressionBundle = True
 
-    def __init__(self, shape, ops, traffic, body=None):
+    def __init__(self, shape, ops, traffic, body=None, orig=None):
         super(ExpressionBundle, self).__init__(body=body)
         self.shape = shape
         self.ops = ops
         self.traffic = traffic
+        self.orig=orig
 
     def __repr__(self):
         return "<ExpressionBundle (%d)>" % len(self.exprs)
