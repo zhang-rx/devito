@@ -100,12 +100,13 @@ class BasicRewriter(AbstractRewriter):
             call, params = zip(*args)
             name = "f_%d" % root.tag
 
+            called = Callable(name, free, 'void', flatten(params), ('static',))
+
             # Produce the new Call
-            mapper[root] = List(header=noinline, body=Call(name, call))
+            mapper[root] = List(header=noinline, body=Call(name, call, called=called))
 
             # Produce the new Callable
-            functions.setdefault(name, Callable(name, free, 'void', flatten(params),
-                                                ('static',)))
+            functions.setdefault(name, called)
 
         # Transform the main tree
         processed = Transformer(mapper).visit(nodes)

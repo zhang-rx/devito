@@ -1,11 +1,13 @@
 from devito.dle import AdvancedRewriter
 from devito.dle.backends import dle_pass
-from devito.ir.iet import FindNodes, Expression, Iteration, Transformer
+from devito.ir.iet import FindNodes, Expression, Iteration, Transformer, ExpressionBundle
 from devito.ir.iet.visitors import Visitor
 from sympy import Symbol
 from devito import Eq
 from devito.ir.equations.equation import ClusterizedEq
 from devito.cgen_utils import ccode
+from devito.tools.utils import flatten
+import copy
 
 class Assignment(object):
     def __init__(self, var, space=None):
@@ -30,7 +32,6 @@ def update_writes(writes, iteration):
         assert(type(w) is Assignment)
         if hasattr(w.var, 'is_Tensor'):
             w.ranges[iteration.index] = iteration.limits
-    writes += [Assignment(iteration.index)]
     return writes
 
     
@@ -67,32 +68,74 @@ class LoopDefinitionInvariant(object):
             t1 = Symbol('t1')
             t0 = Symbol('t0')
             self.eq = Eq(node.lhs.subs(t+1, t1), node.rhs.subs(t, t0))
+        else:
+            self.limits = {'lower': self.node.limits[0], 'upper': self.node.index, 'index': Symbol("%s1"%self.node.index)}
 
     def subs(self, old, new):
         if self.eq is not None:
             return LoopDefinitionInvariant(self.eq.subs(old, new))
         else:
-            return self.children.subs(old, new)
+            cp = copy.copy(self)
+            cp.children = cp.children.subs(old, new)
+            return cp
+
+    def msubs(self, subs):
+        ret = self
+        for k, v in subs.items():
+            ret = ret.subs(k, v)
+        return ret
 
     def __str__(self):
         if self.eq is not None:
             return ccode(self.eq)
         else:
-            return "\\forall int %s1; %s <= %s1 <= %s ==> (%s)" % (self.node.index, self.node.limits[0], self.node.index, self.node.index, str(self.children).replace(self.node.index, '%s1'%str(self.node.index)))
+            if type(self.children.node) is Iteration:
+                self.children.limits['upper'] = self.children.node.limits[1]
+            subs = {self.node.index: self.limits['index']}
+            if self.node.dim.is_Derived:
+                subs[self.node.dim.parent] = self.limits['index']
+            child = self.children.msubs(subs)
+                
+            return "\\forall int %s; %s <= %s < %s ==> (%s)" % (ccode(self.limits['index']), ccode(self.limits['lower']), ccode(self.limits['index']), ccode(self.limits['upper']), str(child))
 
 
-class LoopInvariantVisitor(Visitor):
+class DefinitionInvariantVisitor(Visitor):
     def visit_Iteration(self,o):
         return LoopDefinitionInvariant(o, children=self.visit(o.nodes[0]))
-        #return "forall int %s1; %s <= %s1 <= %s + 1 ==> (%s)" % (o.index, o.limits[0], o.index, o.limits[1], )
-        
 
     def visit_ExpressionBundle(self, o):
         return LoopDefinitionInvariant(o.orig)
 
+    def visit_List(self, o):
+        return self.visit(o.body[0])
+
+    def visit_Call(self, o):
+        return self.visit(o.called).msubs(dict(zip(o.called.parameters, o.params)))
+
+    def visit_Callable(self, o):
+        expressions = FindNodes(ExpressionBundle).visit(o.body)
+        return LoopDefinitionInvariant(expressions[0].orig)
+
+
+class AssignInvariantVisitor(Visitor):
+    def visit_Iteration(self, o):
+        return self.visit(o.nodes)
+
+    def visit_ExpressionBundle(self, o):
+        return [Assignment(k, s) for (k, v), s in o.traffic.items() if v=='w']
+
+    def visit_Call(self, o):
+        return self.visit(o.called)
+
+    def visit_Callable(self, o):
+        return self.visit(o.body)
+
+    def visit_tuple(self, o):
+        return flatten([self.visit(x) for x in o])
 
 class LoopAnnotationRewriter(AdvancedRewriter):
     def _pipeline(self, state):
+        super(LoopAnnotationRewriter, self)._pipeline(state)
         self._extract_invariants(state)
 
     @dle_pass
@@ -103,13 +146,16 @@ class LoopAnnotationRewriter(AdvancedRewriter):
             if i.is_Sequential:
                 continue
             original_a = i.annotations or []
-            writes = [str(x) for x in get_written_variables(i)]
-            inv = LoopInvariantVisitor().visit(i)
+            writes = AssignInvariantVisitor().visit(i)
+            writes += [Assignment(i.index)]
+            inv = DefinitionInvariantVisitor().visit(i)
+            from IPython import embed
+            embed()
             a = []
-            a.append(LoopAnnotation('invariant', "%s <= %s <= %s + 1" % (i.limits[0], i.index, i.limits[1])))
-            a.append(LoopAnnotation('invariant', "(%s - %s)%%%s == 0" % (i.index, i.limits[0], i.limits[2])))
+            a.append(LoopAnnotation('invariant', "%s <= %s <= %s + 1" % (ccode(i.limits[0]), ccode(i.index), ccode(i.limits[1]))))
+            a.append(LoopAnnotation('invariant', "(%s - %s)%%%s == 0" % (ccode(i.index), ccode(i.limits[0]), ccode(i.limits[2]))))
             a.append(LoopAnnotation('invariant', str(inv)))
-            a.append(LoopAnnotation('assigns', ", ".join(writes)))
+            a.append(LoopAnnotation('assigns', ", ".join([str(x) for x in writes])))
 
             
             mapper[i] = i._rebuild(annotations=([str(x) for x in a] + original_a))

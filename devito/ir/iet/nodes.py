@@ -194,9 +194,10 @@ class Call(Node):
 
     is_Call = True
 
-    def __init__(self, name, params=None):
+    def __init__(self, name, params=None, called=None):
         self.name = name
         self.params = as_tuple(params)
+        self.called = called
 
     def __repr__(self):
         return "Call::\n\t%s(...)" % self.name
