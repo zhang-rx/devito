@@ -14,9 +14,6 @@ sigma = .2
 dt = sigma * dx
 
 
-
-
-
 grid = Grid(shape=(nx, ny), extent=(2., 2.))
 u = TimeFunction(name='u', grid=grid)
 
@@ -24,7 +21,6 @@ u = TimeFunction(name='u', grid=grid)
 eq = Eq(u.dt + c*u.dxl + c*u.dyl)
 
 stencil = solve(eq, u.forward)
-
 
 # Reset our data field and ICs in both buffers
 init_smooth(field=u.data[0], dx=dx, dy=dy)
