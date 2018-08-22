@@ -379,6 +379,7 @@ class OperatorRunnable(Operator):
             >>> op = Operator(Eq(u3.forward, u3 + 1))
             >>> op.apply(time_M=10)
         """
+        profile_output = kwargs.pop('profile_output', False)
         # Build the arguments list to invoke the kernel function
         args = self.arguments(**kwargs)
 
@@ -387,10 +388,12 @@ class OperatorRunnable(Operator):
         self.cfunction(*arg_values)
 
         # Output summary of performance achieved
-        return self._profile_output(args)
+        return self._profile_output(args, profile_output)
 
-    def _profile_output(self, args):
+    def _profile_output(self, args, profile_output):
         """Return a performance summary of the profiled sections."""
+        if not profile_output:
+            return ""
         summary = self.profiler.summary(args, self._dtype)
         with bar():
             for k, v in summary.items():

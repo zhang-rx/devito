@@ -13,7 +13,7 @@ class Assignment(object):
     def __init__(self, var, space=None):
         self.var = var
         self.space = space
-        self.ranges = {'t': 't1', 'x':'x', 'y':'y'}
+        self.ranges = {'t': 't1', 'x':'x', 'y':'y', 'x0_block': 'x', 'y0_block': 'y'}
         
     def __str__(self):
         if type(self.var) is str:
@@ -32,19 +32,8 @@ def update_writes(writes, iteration):
         assert(type(w) is Assignment)
         if hasattr(w.var, 'is_Tensor'):
             w.ranges[iteration.index] = iteration.limits
-    return writes
-
-    
-def get_written_variables(node):
-    assert(node.is_Iteration)
-    writes = []
-
-    for n in node.nodes:
-        if n.is_ExpressionBundle:
-            writes.extend([Assignment(k, s) for (k, v), s in n.traffic.items() if v=='w'])
-        elif n.is_Iteration:
-            writes.extend(get_written_variables(n))
-    writes = update_writes(writes, node)
+            if hasattr(iteration.dim, 'parent'):
+                w.ranges[str(iteration.dim.parent)] = iteration.limits
     return writes
 
 class LoopAnnotation(object):
@@ -147,10 +136,9 @@ class LoopAnnotationRewriter(AdvancedRewriter):
                 continue
             original_a = i.annotations or []
             writes = AssignInvariantVisitor().visit(i)
+            writes = update_writes(writes, i)
             writes += [Assignment(i.index)]
             inv = DefinitionInvariantVisitor().visit(i)
-            from IPython import embed
-            embed()
             a = []
             a.append(LoopAnnotation('invariant', "%s <= %s <= %s + 1" % (ccode(i.limits[0]), ccode(i.index), ccode(i.limits[1]))))
             a.append(LoopAnnotation('invariant', "(%s - %s)%%%s == 0" % (ccode(i.index), ccode(i.limits[0]), ccode(i.limits[2]))))
