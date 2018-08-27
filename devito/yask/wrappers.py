@@ -43,18 +43,20 @@ class YaskKernel(object):
         # Shared object name
         self.soname = "%s.devito.%s" % (name, configuration['platform'])
 
+        # The lock manager prevents race conditions
+        # `lock_m` is used only to keep the lock manager alive
+        with warnings.catch_warnings():
+            cleanup_m = CleanupManager()
+            lock_m = CacheLockManager(cleanup_m, namespace['yask-output-dir'])  # noqa
+
+        # Now we have exclusive access to the JIT-compiled objects cache
+
         if os.path.exists(os.path.join(namespace['yask-pylib'], '%s.py' % name)):
             # Nothing to do -- the YASK solution was compiled in a previous session
             yk = import_module(name)
             log("cache hit, `%s` imported w/o jitting" % name)
         else:
             # We create and JIT compile a fresh YASK solution
-
-            # The lock manager prevents race conditions
-            # `lock_m` is used only to keep the lock manager alive
-            with warnings.catch_warnings():
-                cleanup_m = CleanupManager()
-                lock_m = CacheLockManager(cleanup_m, namespace['yask-output-dir'])  # noqa
 
             # The directory in which the YASK-generated code (.hpp) will be placed
             yk_codegen = namespace['yask-codegen'](name, 'devito',
@@ -103,8 +105,8 @@ class YaskKernel(object):
             invalidate_caches()
             yk = import_module(name)
 
-            # Release the lock manager
-            cleanup_m.clean_up()
+        # Release the lock manager
+        cleanup_m.clean_up()
 
         # Create the YASK solution object
         kfac = yk.yk_factory()
