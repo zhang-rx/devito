@@ -116,11 +116,6 @@ class YaskKernel(object):
         # so that applicable options will apply to all API calls.
         self.soln.apply_command_line_options(configuration.yask['options'] or '')
 
-        # MPI setup: simple rank configuration in 1st dim only.
-        # TODO: in production runs, the ranks would be distributed along all
-        # domain dimensions.
-        self.soln.set_num_ranks(self.space_dimensions[0], self.env.get_num_ranks())
-
         # Redirect stdout to a string or file
         if configuration.yask['dump']:
             filename = 'yk_dump.%s.%s.%s.txt' % (name, configuration['platform'],
@@ -155,6 +150,12 @@ class YaskKernel(object):
         grids = {i.grid for i in toshare if i.is_TensorFunction and i.grid is not None}
         assert len(grids) == 1
         grid = grids.pop()
+
+        # MPI setup
+        assert len(self.space_dimensions) == len(grid.distributor.topology)
+        assert grid.distributor.nprocs == self.env.get_num_ranks()
+        for i, j in zip(self.space_dimensions, grid.distributor.topology):
+            self.soln.set_num_ranks(i, j)
 
         # Set the domain size, apply grid sharing, more sanity checks
         for k, v in zip(self.space_dimensions, grid.shape_domain):
