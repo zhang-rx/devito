@@ -125,10 +125,9 @@ configuration = Parameters("Devito-Configuration")
 def init_configuration(configuration=configuration, env_vars_mapper=env_vars_mapper):
     # Populate /configuration/ with user-provided options
     if environ.get('DEVITO_CONFIG') is None:
-        # At init time, it is important to first configure the compiler, then
-        # the backend (which is impacted by the compiler), finally everything
-        # else in any arbitrary order
-        process_order = filter_ordered(['compiler', 'backend'] +
+        # At init time, it is important to configure MPI, compiler, and backend
+        # in this precise order, finally all the rest in any arbitrary order
+        process_order = filter_ordered(['mpi', 'compiler', 'backend'] +
                                        list(env_vars_mapper.values()))
         queue = sorted(env_vars_mapper.items(), key=lambda i: process_order.index(i[1]))
         unprocessed = OrderedDict([(v, environ.get(k, configuration._defaults[v]))
