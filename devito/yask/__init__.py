@@ -59,6 +59,7 @@ class YaskCompiler(configuration['compiler'].__class__):
 
     def __init__(self, *args, **kwargs):
         kwargs['cpp'] = True
+        kwargs['mpi'] = configuration['mpi']
         kwargs['suffix'] = configuration['compiler'].suffix
         super(YaskCompiler, self).__init__(*args, **kwargs)
         self.cflags = [i for i in configuration['compiler'].cflags
