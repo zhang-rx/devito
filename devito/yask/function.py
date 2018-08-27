@@ -131,7 +131,7 @@ class Function(function.Function, Signer):
         """
         return self.data_domain
 
-    @cached_property
+    @property
     @_allocate_memory
     def data_domain(self):
         """
@@ -139,19 +139,49 @@ class Function(function.Function, Signer):
 
             Alias to ``self.data``.
         """
+        self._is_halo_dirty = True
         return Data(self._data.grid, self.shape, self.indices, self.dtype,
                     offset=self._offset_domain.left)
 
-    @cached_property
+    @property
     @_allocate_memory
     def data_with_halo(self):
+        self._is_halo_dirty = True
+        self._halo_exchange()
         return Data(self._data.grid, self.shape_with_halo, self.indices, self.dtype,
                     offset=self._offset_halo.left)
 
-    @cached_property
+    @property
     @_allocate_memory
     def data_allocated(self):
+        self._is_halo_dirty = True
+        self._halo_exchange()
         return Data(self._data.grid, self.shape_allocated, self.indices, self.dtype)
+
+    @property
+    @_allocate_memory
+    def data_ro_domain(self):
+        return Data(self._data.grid, self.shape, self.indices, self.dtype,
+                    offset=self._offset_domain.left)
+
+    @property
+    @_allocate_memory
+    def data_ro_with_halo(self):
+        return Data(self._data.grid, self.shape_with_halo, self.indices, self.dtype,
+                    offset=self._offset_halo.left)
+
+    @property
+    @_allocate_memory
+    def data_ro_allocated(self):
+        return Data(self._data.grid, self.shape_allocated, self.indices, self.dtype)
+
+    def __halo_begin_exchange(self, dim):
+        # TODO: call a routine on `self._data.grid` triggering the halo exchange
+        pass
+
+    def __halo_end_exchange(self, dim):
+        # TODO: call a routine on `self._data.grid` terminating the halo exchange
+        pass
 
     def initialize(self):
         raise NotImplementedError
