@@ -157,7 +157,7 @@ class YaskKernel(object):
         grid = grids.pop()
 
         # Set the domain size, apply grid sharing, more sanity checks
-        for k, v in zip(self.space_dimensions, grid.shape):
+        for k, v in zip(self.space_dimensions, grid.shape_domain):
             self.soln.set_rank_domain_size(k, int(v))
         for k, v in toshare.items():
             target = self.grids.get(k.name)

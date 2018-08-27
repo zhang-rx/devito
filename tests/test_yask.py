@@ -332,18 +332,18 @@ class TestOperatorSimple(object):
         # First run
         op(time=0)
         assert np.all(u.data[1] == 1.)
-        assert u.data[:].sum() == np.prod(grid.shape)
+        assert u.data[:].sum() == np.prod(grid.shape_domain)
         # Nothing should have changed at this point
         op(time=0, yu4D=u)
         assert np.all(u.data[1] == 1.)
-        assert u.data[:].sum() == np.prod(grid.shape)
+        assert u.data[:].sum() == np.prod(grid.shape_domain)
         # Now try with a different grid
         grid = Grid(shape=(3, 3, 3))
         u = TimeFunction(name='yu4D', grid=grid, space_order=0)
         u.data[:] = 0.
         op(time=0, yu4D=u)
         assert np.all(u.data[1] == 1.)
-        assert u.data[:].sum() == np.prod(grid.shape)
+        assert u.data[:].sum() == np.prod(grid.shape_domain)
 
 
 class TestOperatorAdvanced(object):
