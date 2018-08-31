@@ -21,11 +21,22 @@ class Assignment(object):
         else:
             s = self.var.name
             for x in self.var.indices:
-                r = self.ranges[str(x)]
+                r = self.ranges[ccode(x)]
                 if type(r) is tuple:
-                    r = str(r[0]) + "..." + str(r[1])
+                    r = ccode(r[0]) + "..." + ccode(r[1])
                 s += "[%s]"%r
             return s
+
+    def subs(self, subs):
+        for k, v in subs.items():
+            if k == v:
+                continue
+            for rk, rv in self.ranges.items():
+                if isinstance(rv, tuple) and k in rv:
+                    newrv = list(rv)
+                    newrv[newrv.index(k)] = v
+                    self.ranges[rk] = tuple(newrv)
+        return self
 
 def update_writes(writes, iteration):
     for w in writes:
@@ -50,7 +61,7 @@ class LoopAnnotation(object):
 class LoopDefinitionInvariant(object):
     def __init__(self, node, children=None):
         self.node = node
-        self.children = children
+        self.children = children or []
         self.eq = None
         if type(node) is ClusterizedEq or type(node) is Eq:            
             t = node.lhs.args[1] - 1
@@ -58,63 +69,79 @@ class LoopDefinitionInvariant(object):
             t0 = Symbol('t0')
             self.eq = Eq(node.lhs.subs(t+1, t1), node.rhs.subs(t, t0))
         else:
-            self.limits = {'lower': self.node.limits[0], 'upper': self.node.index, 'index': Symbol("%s1"%self.node.index)}
+            for n in self.children:
+                if isinstance(n.node, Iteration):
+                    n.limits['upper'] = n.limits['nodeupper'] + 1
+            self.limits = {'lower': self.node.limits[0], 'upper': Symbol(self.node.index), 'index': Symbol("%s1"%self.node.index), 'nodeupper': self.node.limits[1]}
+            subs = {self.node.dim: self.limits['index']}
+            if self.node.dim.is_Derived:
+                subs[self.node.dim.root] = self.limits['index']
+            self.children = [x.msubs(subs) for x in self.children]
+        
 
     def subs(self, old, new):
         if self.eq is not None:
             return LoopDefinitionInvariant(self.eq.subs(old, new))
         else:
-            cp = copy.copy(self)
-            cp.children = cp.children.subs(old, new)
-            return cp
+            limits = self.limits
+            for k, v in limits.items():
+                limits[k] = v.subs(old, new)
+            self.limits = limits
+            self.children = [x.subs(old, new) for x in self.children]
+            return self
 
     def msubs(self, subs):
         ret = self
         for k, v in subs.items():
-            ret = ret.subs(k, v)
+            if k!=v:
+                ret = ret.subs(k, v)
         return ret
 
     def __str__(self):
         if self.eq is not None:
             return ccode(self.eq)
         else:
-            if type(self.children.node) is Iteration:
-                self.children.limits['upper'] = self.children.node.limits[1]
-            subs = {self.node.index: self.limits['index']}
-            if self.node.dim.is_Derived:
-                subs[self.node.dim.parent] = self.limits['index']
-            child = self.children.msubs(subs)
+            
+            children = [str(x) for x in self.children]
+            childstr = ", ".join(children)
                 
-            return "\\forall int %s; %s <= %s < %s ==> (%s)" % (ccode(self.limits['index']), ccode(self.limits['lower']), ccode(self.limits['index']), ccode(self.limits['upper']), str(child))
+            return "\\forall int %s; %s <= %s < %s ==> (%s)" % (ccode(self.limits['index']), ccode(self.limits['lower']), ccode(self.limits['index']), ccode(self.limits['upper']), childstr)
 
 
 class DefinitionInvariantVisitor(Visitor):
-    def visit_Iteration(self,o):
-        return LoopDefinitionInvariant(o, children=self.visit(o.nodes[0]))
-
-    def visit_ExpressionBundle(self, o):
+    def visit_Iteration(self, o, dims=None):
+        dim = o.dim.root if o.dim.is_Derived else o.dim
+        if dim not in dims: 
+            return LoopDefinitionInvariant(o, children=flatten(self.visit(o.nodes,
+                                                                          dims=dims + [dim])))
+        else:
+            return self.visit(o.nodes, dims=dims)
+        
+    def visit_ExpressionBundle(self, o, dims=None):
         return LoopDefinitionInvariant(o.orig)
 
-    def visit_List(self, o):
-        return self.visit(o.body[0])
+    def visit_List(self, o, dims=None):
+        return flatten([self.visit(x, dims=dims) for x in o.body])
 
-    def visit_Call(self, o):
-        return self.visit(o.called).msubs(dict(zip(o.called.parameters, o.params)))
+    def visit_Call(self, o, dims=None):
+        return [x.msubs(dict(zip(o.called.parameters, o.params))) for x in self.visit(o.called, dims=dims)]
 
-    def visit_Callable(self, o):
-        expressions = FindNodes(ExpressionBundle).visit(o.body)
-        return LoopDefinitionInvariant(expressions[0].orig)
+    def visit_tuple(self, o, dims=None):
+        return flatten([self.visit(x, dims=dims) for x in o])
+
+    def visit_Callable(self, o, dims=None):
+        return self.visit(o.body, dims=dims)
 
 
 class AssignInvariantVisitor(Visitor):
     def visit_Iteration(self, o):
-        return self.visit(o.nodes)
+        return update_writes(self.visit(o.nodes), o)
 
     def visit_ExpressionBundle(self, o):
         return [Assignment(k, s) for (k, v), s in o.traffic.items() if v=='w']
 
     def visit_Call(self, o):
-        return self.visit(o.called)
+        return [x.subs(dict(zip(o.called.parameters, o.params))) for x in self.visit(o.called)]
 
     def visit_Callable(self, o):
         return self.visit(o.body)
@@ -138,7 +165,7 @@ class LoopAnnotationRewriter(AdvancedRewriter):
             writes = AssignInvariantVisitor().visit(i)
             writes = update_writes(writes, i)
             writes += [Assignment(i.index)]
-            inv = DefinitionInvariantVisitor().visit(i)
+            inv = DefinitionInvariantVisitor().visit(i, dims=[])
             a = []
             a.append(LoopAnnotation('invariant', "%s <= %s <= %s + 1" % (ccode(i.limits[0]), ccode(i.index), ccode(i.limits[1]))))
             a.append(LoopAnnotation('invariant', "(%s - %s)%%%s == 0" % (ccode(i.index), ccode(i.limits[0]), ccode(i.limits[2]))))
