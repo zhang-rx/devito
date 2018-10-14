@@ -431,6 +431,10 @@ class Data(np.ndarray):
                 wrapped.append(i % mod)
         return wrapped[0] if len(index) == 1 else tuple(wrapped)
 
+    def __setstate__(self, state):
+        super(Data, self).__setstate__(state)
+        self._memfree_args = None
+
     def reset(self):
         """
         Set all grid entries to 0.

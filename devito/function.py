@@ -568,7 +568,7 @@ class TensorFunction(AbstractCachedFunction, ArgProvider):
 
     # Pickling support
     _pickle_kwargs = AbstractCachedFunction._pickle_kwargs +\
-        ['grid', 'staggered', 'initializer']
+        ['grid', 'staggered', 'initializer', 'data']
 
 
 class Function(TensorFunction, Differentiable):
@@ -979,17 +979,21 @@ class SubFunction(Function):
     def __init__(self, *args, **kwargs):
         if not self._cached():
             super(SubFunction, self).__init__(*args, **kwargs)
-            self._parent = kwargs['parent']
-
-    def _halo_exchange(self):
-        return
-
-    def _arg_values(self, **kwargs):
-        if self.name in kwargs:
-            raise RuntimeError("`%s` is a SubFunction, so it can't be assigned "
-                               "a value dynamically" % self.name)
-        else:
-            return self._parent._arg_defaults(alias=self._parent).reduce_all()
+            # self._parent = kwargs['parent']
+    #
+    # @property
+    # def parent(self):
+    #     return self._parent
+    #
+    # def _halo_exchange(self):
+    #     return
+    #
+    # def _arg_values(self, **kwargs):
+    #     if self.name in kwargs:
+    #         raise RuntimeError("`%s` is a SubFunction, so it can't be assigned "
+    #                            "a value dynamically" % self.name)
+    #     else:
+    #         return self._parent._arg_defaults(alias=self._parent).reduce_all()
 
 
 class AbstractSparseFunction(TensorFunction):
@@ -1359,7 +1363,7 @@ class SparseFunction(AbstractSparseFunction, Differentiable):
                 self._coordinates = coordinates
             else:
                 dimensions = (self.indices[-1], Dimension(name='d'))
-                self._coordinates = SubFunction(name='%s_coords' % self.name, parent=self,
+                self._coordinates = SubFunction(name='%s_coords' % self.name, # parent=self,
                                                 dtype=self.dtype, dimensions=dimensions,
                                                 shape=(self.npoint, self.grid.dim),
                                                 space_order=0, initializer=coordinates)
@@ -1638,7 +1642,7 @@ class SparseFunction(AbstractSparseFunction, Differentiable):
         # values are not distributed, as this is a read-only field.
 
     # Pickling support
-    _pickle_kwargs = AbstractSparseFunction._pickle_kwargs + ['coordinates_data']
+    _pickle_kwargs = AbstractSparseFunction._pickle_kwargs + ['coordinates']
 
 
 class SparseTimeFunction(AbstractSparseTimeFunction, SparseFunction):
