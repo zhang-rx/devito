@@ -3,38 +3,59 @@ from collections import Iterable, OrderedDict, namedtuple
 import sympy
 from sympy import Number, Indexed, Symbol, LM, LC
 
-from devito.symbolics.extended_sympy import Add, Mul, Eq, FrozenExpr
+from devito.symbolics.extended_sympy import Add, Mul, Pow, Eq, FrozenExpr
 from devito.symbolics.search import retrieve_indexed, retrieve_functions
-from devito.dimension import Dimension
 from devito.tools import as_tuple, flatten
-from devito.types import Symbol as dSymbol
 
-__all__ = ['freeze_expression', 'xreplace_constrained', 'xreplace_indices',
-           'pow_to_mul', 'as_symbol', 'indexify', 'convert_to_SSA', 'split_affine']
+__all__ = ['freeze', 'unfreeze', 'evaluate', 'xreplace_constrained', 'xreplace_indices',
+           'pow_to_mul', 'as_symbol', 'indexify', 'split_affine']
 
 
-def freeze_expression(expr):
+def freeze(expr):
     """
     Reconstruct ``expr`` turning all :class:`sympy.Mul` and :class:`sympy.Add`
-    into, respectively, :class:`devito.Mul` and :class:`devito.Add`.
+    into :class:`FrozenExpr` equivalents.
     """
     if expr.is_Atom or expr.is_Indexed:
         return expr
     elif expr.is_Add:
-        rebuilt_args = [freeze_expression(e) for e in expr.args]
+        rebuilt_args = [freeze(e) for e in expr.args]
         return Add(*rebuilt_args, evaluate=False)
     elif expr.is_Mul:
-        rebuilt_args = [freeze_expression(e) for e in expr.args]
+        rebuilt_args = [freeze(e) for e in expr.args]
         return Mul(*rebuilt_args, evaluate=False)
+    elif expr.is_Pow:
+        rebuilt_args = [freeze(e) for e in expr.args]
+        return Pow(*rebuilt_args, evaluate=False)
     elif expr.is_Equality:
-        rebuilt_args = [freeze_expression(e) for e in expr.args]
+        rebuilt_args = [freeze(e) for e in expr.args]
         if isinstance(expr, FrozenExpr):
             # Avoid dropping metadata associated with /expr/
             return expr.func(*rebuilt_args)
         else:
             return Eq(*rebuilt_args, evaluate=False)
     else:
-        return expr.func(*[freeze_expression(e) for e in expr.args])
+        return expr.func(*[freeze(e) for e in expr.args])
+
+
+def unfreeze(expr):
+    """
+    Reconstruct ``expr`` turning all :class:`FrozenExpr` subtrees into their
+    SymPy equivalents.
+    """
+    if expr.is_Atom or expr.is_Indexed:
+        return expr
+    func = expr.func.__base__ if isinstance(expr, FrozenExpr) else expr.func
+    return func(*[unfreeze(e) for e in expr.args])
+
+
+def evaluate(expr, **subs):
+    """
+    Numerically evaluate a SymPy expression. Subtrees of type :class:`FrozenExpr`
+    are forcibly evaluated.
+    """
+    expr = unfreeze(expr)
+    return expr.subs(subs)
 
 
 def xreplace_constrained(exprs, make, rule=None, costmodel=lambda e: True, repeat=False):
@@ -132,16 +153,24 @@ def xreplace_constrained(exprs, make, rule=None, costmodel=lambda e: True, repea
     return found + rebuilt, found
 
 
-def xreplace_indices(exprs, mapper, candidates=None, only_rhs=False):
+def xreplace_indices(exprs, mapper, key=None, only_rhs=False):
     """
-    Create new expressions from ``exprs``, by replacing all index variables
-    specified in mapper appearing as a tensor index. Only tensors whose symbolic
-    name appears in ``candidates`` are considered if ``candidates`` is not None.
+    Replace indices in SymPy equations.
+
+    :param exprs: The target SymPy expression, or a collection of SymPy expressions.
+    :param mapper: A dictionary containing the index substitution rules.
+    :param key: (Optional) either an iterable or a function. In the former case,
+                all objects whose name does not appear in ``key`` are ruled out.
+                Likewise, if a function, all objects for which ``key(obj)`` gives
+                False are ruled out.
+    :param only_rhs: (Optional) apply the substitution rules to right-hand sides only.
     """
     get = lambda i: i.rhs if only_rhs is True else i
     handle = flatten(retrieve_indexed(get(i)) for i in as_tuple(exprs))
-    if candidates is not None:
-        handle = [i for i in handle if i.base.label in candidates]
+    if isinstance(key, Iterable):
+        handle = [i for i in handle if i.base.label in key]
+    elif callable(key):
+        handle = [i for i in handle if key(i)]
     mapper = dict(zip(handle, [i.xreplace(mapper) for i in handle]))
     replaced = [i.xreplace(mapper) for i in as_tuple(exprs)]
     return replaced if isinstance(exprs, Iterable) else replaced[0]
@@ -152,11 +181,15 @@ def pow_to_mul(expr):
         return expr
     elif expr.is_Pow:
         base, exp = expr.as_base_exp()
-        if exp <= 0 or not exp.is_integer:
-            # Cannot handle powers containing non-integer non-positive exponents
+        if exp > 10 or exp < -10 or int(exp) != exp or exp == 0 or exp == -1:
+            # Large and non-integer powers remain untouched, as do reciprocals
             return expr
-        else:
+        elif exp > 0:
             return sympy.Mul(*[base]*exp, evaluate=False)
+        else:
+            # sympy represents 1/x as Pow(x,-1)
+            posexpr = sympy.Mul(*[base]*(-exp), evaluate=False)
+            return sympy.Pow(posexpr, -1, evaluate=False)
     else:
         return expr.func(*[pow_to_mul(i) for i in expr.args], evaluate=False)
 
@@ -165,6 +198,7 @@ def as_symbol(expr):
     """
     Extract the "main" symbol from a SymPy object.
     """
+    from devito.dimension import Dimension
     try:
         return Number(expr)
     except (TypeError, ValueError):
@@ -181,6 +215,9 @@ def as_symbol(expr):
         raise TypeError("Cannot extract symbol from type %s" % type(expr))
 
 
+AffineFunction = namedtuple("AffineFunction", "var, coeff, shift")
+
+
 def split_affine(expr):
     """
     split_affine(expr)
@@ -190,7 +227,6 @@ def split_affine(expr):
 
     :raises ValueError: If ``expr`` is non affine.
     """
-    AffineFunction = namedtuple("AffineFunction", "var, coeff, shift")
     if expr.is_Number:
         return AffineFunction(None, None, expr)
     poly = expr.as_poly()
@@ -213,31 +249,3 @@ def indexify(expr):
         except AttributeError:
             pass
     return expr.xreplace(mapper)
-
-
-def convert_to_SSA(exprs):
-    """
-    Convert an iterable of :class:`Eq`s into Static Single Assignment form.
-    """
-    # Identify recurring LHSs
-    seen = {}
-    for i, e in enumerate(exprs):
-        seen.setdefault(e.lhs, []).append(i)
-    # Optimization: don't waste time reconstructing stuff if already in SSA form
-    if all(len(i) == 1 for i in seen.values()):
-        return exprs
-    # Do the SSA conversion
-    c = 0
-    mapper = {}
-    processed = []
-    for i, e in enumerate(exprs):
-        where = seen[e.lhs]
-        if len(where) > 1 and where[-1] != i:
-            # LHS needs SSA form
-            ssa_lhs = dSymbol(name='ssa_t%d' % c, dtype=e.lhs.base.function.dtype)
-            processed.append(e.func(ssa_lhs, e.rhs.xreplace(mapper)))
-            mapper[e.lhs] = ssa_lhs
-            c += 1
-        else:
-            processed.append(e.func(e.lhs, e.rhs.xreplace(mapper)))
-    return processed

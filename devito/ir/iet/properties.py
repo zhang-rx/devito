@@ -7,7 +7,11 @@ class IterationProperty(Tag):
     An :class:`Iteration` decorator.
     """
 
-    _repr = 'Property'
+    _KNOWN = []
+
+    def __init__(self, name, val=None):
+        super(IterationProperty, self).__init__(name, val)
+        IterationProperty._KNOWN.append(self)
 
 
 SEQUENTIAL = IterationProperty('sequential')
@@ -19,6 +23,9 @@ PARALLEL = IterationProperty('parallel')
 PARALLEL_IF_ATOMIC = IterationProperty('parallel_if_atomic')
 """The Iteration can be executed in parallel as long as all increments are
 guaranteed to be atomic."""
+
+COLLAPSED = lambda i: IterationProperty('collapsed', i)
+"""The Iteration is the root of a nest of ``i`` collapsed Iterations."""
 
 VECTOR = IterationProperty('vector-dim')
 """The Iteration can be SIMD-vectorized."""
@@ -47,3 +54,17 @@ def tagger(i):
 def ntags():
     return len(IterationProperty._KNOWN) - ntags.n_original_properties
 ntags.n_original_properties = len(IterationProperty._KNOWN)  # noqa
+
+
+class HaloSpotProperty(Tag):
+
+    """
+    A :class:`HaloSpot` decorator.
+    """
+
+    pass
+
+
+REDUNDANT = HaloSpotProperty('redundant')
+"""The HaloSpot is redundant given that some other HaloSpots already take care
+of updating the data accessed in the sub-tree."""

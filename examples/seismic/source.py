@@ -1,14 +1,14 @@
 from scipy import interpolate
-from devito import Dimension
-from devito.function import SparseTimeFunction
-
 from cached_property import cached_property
-
 import numpy as np
 try:
     import matplotlib.pyplot as plt
 except:
     plt = None
+
+from devito import Dimension
+from devito.function import SparseTimeFunction
+
 
 __all__ = ['PointSource', 'Receiver', 'Shot', 'WaveletSource',
            'RickerSource', 'GaborSource', 'TimeAxis']
@@ -75,24 +75,35 @@ class PointSource(SparseTimeFunction):
 
     :param name: Name of the symbol representing this source.
     :param grid: :class:`Grid` object defining the computational domain.
-    :param coordinates: Point coordinates for this source.
     :param time_range: :class:`TimeAxis` TimeAxis(start, step, num) object.
-    :param data: (Optional) Data values to initialise point data.
-    :param npoint: (Optional) Number of sparse points represented by this source.
-    :param time_order: (Optional) Time discretization order (defaults to 2).
-    :param dimension: :(Optional) class:`Dimension` object for
-                       representing the number of points in this source.
+    :param npoint: (Optional) number of sparse points represented by this source.
+    :param data: (Optional) data values to initialise point data.
+    :param coordinates: (Optional) point coordinates for this source.
+    :param space_order: (Optional) space discretization order.
+    :param time_order: (Optional) time discretization order (defaults to 2).
+    :param dtype: (Optional) data type of the buffered data.
+    :param dimension: (Optional) class:`Dimension` object for
+                      representing the number of points in this source.
     """
 
-    def __new__(cls, name, grid, time_range, npoint=None,
-                data=None, coordinates=None, **kwargs):
-        p_dim = kwargs.get('dimension', Dimension(name='p_%s' % name))
-        time_order = kwargs.get('time_order', 2)
-        npoint = npoint or coordinates.shape[0]
+    def __new__(cls, **kwargs):
+        name = kwargs.pop('name')
+        grid = kwargs.pop('grid')
+        time_range = kwargs.pop('time_range')
+        time_order = kwargs.pop('time_order', 2)
+        p_dim = kwargs.pop('dimension', Dimension(name='p_%s' % name))
+
+        coordinates = kwargs.pop('coordinates', kwargs.pop('coordinates_data', None))
+        # Either `npoint` or `coordinates` must be provided
+        npoint = kwargs.pop('npoint', None)
+        if npoint is None:
+            if coordinates is None:
+                raise TypeError("Need either `npoint` or `coordinates`")
+            npoint = coordinates.shape[0]
 
         # Create the underlying SparseTimeFunction object
         obj = SparseTimeFunction.__new__(cls, name=name, grid=grid,
-                                         dimensions=[grid.time_dim, p_dim],
+                                         dimensions=(grid.time_dim, p_dim),
                                          npoint=npoint, nt=time_range.num,
                                          time_order=time_order,
                                          coordinates=coordinates, **kwargs)
@@ -100,14 +111,11 @@ class PointSource(SparseTimeFunction):
         obj._time_range = time_range._rebuild()
 
         # If provided, copy initial data into the allocated buffer
+        data = kwargs.get('data')
         if data is not None:
             obj.data[:] = data
 
         return obj
-
-    def __init__(self, *args, **kwargs):
-        if not self._cached():
-            super(PointSource, self).__init__(*args, **kwargs)
 
     @cached_property
     def time_values(self):
@@ -146,8 +154,12 @@ class PointSource(SparseTimeFunction):
             new_traces[:, i] = interpolate.splev(new_time_range.time_values, tck)
 
         # Return new object
-        return PointSource(self.name, self.grid, data=new_traces,
+        return PointSource(name=self.name, grid=self.grid, data=new_traces,
                            time_range=new_time_range, coordinates=self.coordinates.data)
+
+    # Pickling support
+    _pickle_kwargs = SparseTimeFunction._pickle_kwargs + ['time_range']
+    _pickle_kwargs.remove('nt')  # `nt` is inferred from `time_range`
 
 
 Receiver = PointSource
@@ -166,10 +178,8 @@ class WaveletSource(PointSource):
     """
 
     def __new__(cls, *args, **kwargs):
-        npoint = kwargs.get('npoint', 1)
-        kwargs['npoint'] = npoint
-        obj = PointSource.__new__(cls, *args, **kwargs)
-
+        npoint = kwargs.pop('npoint', 1)
+        obj = PointSource.__new__(cls, npoint=npoint, **kwargs)
         obj.f0 = kwargs.get('f0')
         for p in range(npoint):
             obj.data[:, p] = obj.wavelet(obj.f0, obj.time_values)
@@ -203,6 +213,9 @@ class WaveletSource(PointSource):
         plt.ylabel('Amplitude')
         plt.tick_params()
         plt.show()
+
+    # Pickling support
+    _pickle_kwargs = PointSource._pickle_kwargs + ['f0']
 
 
 class RickerSource(WaveletSource):

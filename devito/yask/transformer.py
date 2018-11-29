@@ -1,15 +1,14 @@
-from devito.dimension import LoweredDimension
 from devito.ir.iet import FindNodes, Expression
 from devito.ir.support import Backward
 from devito.logger import yask_warning as warning
-from devito.symbolics import split_affine
+from devito.symbolics import IntDiv
 
 from devito.yask import nfac
 
-__all__ = ['yaskizer']
+__all__ = ['yaskit', 'make_yask_ast']
 
 
-def yaskizer(trees, yc_soln):
+def yaskit(trees, yc_soln):
     """
     Populate a YASK compiler solution with the :class:`Expression`s found in an IET.
 
@@ -39,8 +38,8 @@ def yaskizer(trees, yc_soln):
             # Can we express both Iteration extremes as
             # `FIRST(i.dim) + integer` OR `LAST(i.dim) + integer` ?
             # If not, one of the following lines will throw a TypeError exception
-            lower_ofs, lower_sym = i.dim.offset_lower()
-            upper_ofs, upper_sym = i.dim.offset_upper()
+            lower_ofs, lower_sym = i.dim.offset_left()
+            upper_ofs, upper_sym = i.dim.offset_right()
 
             if i.is_Parallel:
                 # At this point, no issues are expected -- we should just be able to
@@ -67,9 +66,14 @@ def yaskizer(trees, yc_soln):
                     v.append(nfac.new_not_greater_than_node(ydim, expr))
 
             elif i.is_Sequential:
-                # For sequential Iterations, the extent *must* be statically known
-                assert int(i.extent())
-                assert lower_sym == upper_sym  # A corollary of the above condition
+                # For sequential Iterations, the extent *must* be statically known,
+                # otherwise we don't know how to handle this
+                try:
+                    int(i.extent())
+                except TypeError:
+                    raise NotImplementedError("Found sequential Iteration with "
+                                              "statically unknown extent")
+                assert lower_sym == upper_sym  # A corollary of getting up to this point
                 n = lower_sym
 
                 ydim = nfac.new_domain_index(i.dim.parent.name)
@@ -92,7 +96,7 @@ def yaskizer(trees, yc_soln):
 
         # Build the YASK equations as well as all necessary grids
         for k, v in conditions:
-            yask_expr = handle(k, yc_soln, mapper)
+            yask_expr = make_yask_ast(k, yc_soln, mapper)
 
             if yask_expr is not None:
                 processed.append(yask_expr)
@@ -112,10 +116,10 @@ def yaskizer(trees, yc_soln):
     return mapper
 
 
-def handle(expr, yc_soln, mapper):
+def make_yask_ast(expr, yc_soln, mapper):
 
     def nary2binary(args, op):
-        r = handle(args[0], yc_soln, mapper)
+        r = make_yask_ast(args[0], yc_soln, mapper)
         return r if len(args) == 1 else op(r, nary2binary(args[1:], op))
 
     if expr.is_Integer:
@@ -126,39 +130,40 @@ def handle(expr, yc_soln, mapper):
         a, b = expr.as_numer_denom()
         return nfac.new_const_number_node(float(a)/float(b))
     elif expr.is_Symbol:
-        function = expr.base.function
+        function = expr.function
         if function.is_Constant:
+            # Create a YASK grid if it's the first time we encounter the embedded Function
             if function not in mapper:
                 mapper[function] = yc_soln.new_grid(function.name, [])
-            return mapper[function].new_relative_grid_point([])
-        elif not function.is_Dimension:
+                # Allow number of time-steps to be set in YASK kernel.
+                mapper[function].set_dynamic_step_alloc(True)
+            return mapper[function].new_grid_point([])
+        elif function.is_Dimension:
+            if expr.is_Time:
+                return nfac.new_step_index(expr.name)
+            elif expr.is_Space:
+                # `expr.root` instead of `expr` because YASK wants the SubDimension
+                # information to be provided as if-conditions, and this is handled
+                # a-posteriori directly by `yaskit`
+                return nfac.new_domain_index(expr.root.name)
+            else:
+                return nfac.new_misc_index(expr.name)
+        else:
             # A DSE-generated temporary, which must have already been
             # encountered as a LHS of a previous expression
             assert function in mapper
             return mapper[function]
     elif expr.is_Indexed:
-        function = expr.base.function
+        function = expr.function
+        # Create a YASK grid if it's the first time we encounter the embedded Function
         if function not in mapper:
-            if function.is_TimeFunction:
-                dimensions = [nfac.new_step_index(function.indices[0].name)]
-                dimensions += [nfac.new_domain_index(i.name)
-                               for i in function.indices[1:]]
-            else:
-                dimensions = [nfac.new_domain_index(i.name)
-                              for i in function.indices]
+            dimensions = [make_yask_ast(i.root, yc_soln, mapper)
+                          for i in function.indices]
             mapper[function] = yc_soln.new_grid(function.name, dimensions)
-        # Detect offset from dimension. E.g., in `[x+3,y+4]`, detect `[3,4]`
-        indices = []
-        for i, j in zip(expr.indices, function.indices):
-            if isinstance(i, LoweredDimension):
-                access = i.origin
-            else:
-                # SubDimension require this
-                af = split_affine(i)
-                dim = af.var.parent if af.var.is_Derived else af.var
-                access = dim + af.shift
-            indices.append(int(access - j))
-        return mapper[function].new_relative_grid_point(indices)
+            # Allow number of time-steps to be set in YASK kernel.
+            mapper[function].set_dynamic_step_alloc(True)
+        indices = [make_yask_ast(i, yc_soln, mapper) for i in expr.indices]
+        return mapper[function].new_grid_point(indices)
     elif expr.is_Add:
         return nary2binary(expr.args, nfac.new_add_node)
     elif expr.is_Mul:
@@ -166,26 +171,28 @@ def handle(expr, yc_soln, mapper):
     elif expr.is_Pow:
         base, exp = expr.as_base_exp()
         if not exp.is_integer:
-            warning("non-integer powers unsupported in Devito-YASK translation")
-            raise NotImplementedError
+            raise NotImplementedError("Non-integer powers unsupported in "
+                                      "Devito-YASK translation")
 
         if int(exp) < 0:
             num, den = expr.as_numer_denom()
-            return nfac.new_divide_node(handle(num, yc_soln, mapper),
-                                        handle(den, yc_soln, mapper))
+            return nfac.new_divide_node(make_yask_ast(num, yc_soln, mapper),
+                                        make_yask_ast(den, yc_soln, mapper))
         elif int(exp) >= 1:
             return nary2binary([base] * exp, nfac.new_multiply_node)
         else:
             warning("0-power found in Devito-YASK translation? setting to 1")
             return nfac.new_const_number_node(1)
+    elif isinstance(expr, IntDiv):
+        return nfac.new_divide_node(make_yask_ast(expr.lhs, yc_soln, mapper),
+                                    make_yask_ast(expr.rhs, yc_soln, mapper))
     elif expr.is_Equality:
         if expr.lhs.is_Symbol:
             function = expr.lhs.base.function
             assert function not in mapper
-            mapper[function] = handle(expr.rhs, yc_soln, mapper)
+            mapper[function] = make_yask_ast(expr.rhs, yc_soln, mapper)
         else:
-            return nfac.new_equation_node(*[handle(i, yc_soln, mapper)
+            return nfac.new_equation_node(*[make_yask_ast(i, yc_soln, mapper)
                                             for i in expr.args])
     else:
-        warning("Missing handler in Devito-YASK translation")
-        raise NotImplementedError
+        raise NotImplementedError("Missing handler in Devito-YASK translation")

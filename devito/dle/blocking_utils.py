@@ -1,23 +1,20 @@
 import cgen as c
-from sympy import Symbol
 
-from devito.cgen_utils import ccode
-from devito.ir.iet import (Expression, Iteration, List, UnboundedIndex, ntags,
-                           FindAdjacentIterations, FindNodes, IsPerfectIteration,
-                           NestedTransformer, Transformer, compose_nodes,
-                           is_foldable, retrieve_iteration_tree)
+from devito.dimension import IncrDimension
+from devito.ir.iet import (Expression, Iteration, List, ntags, FindAdjacent,
+                           FindNodes, IsPerfectIteration, Transformer,
+                           compose_nodes, retrieve_iteration_tree)
 from devito.symbolics import as_symbol, xreplace_indices
-from devito.tools import as_tuple
+from devito.tools import as_tuple, flatten
 
-__all__ = ['fold_blockable_tree', 'unfold_blocked_tree']
+__all__ = ['BlockDimension', 'fold_blockable_tree', 'unfold_blocked_tree']
 
 
 def fold_blockable_tree(node, exclude_innermost=False):
     """
     Create :class:`IterationFold`s from sequences of nested :class:`Iteration`.
     """
-    found = FindAdjacentIterations().visit(node)
-    found.pop('seen_iteration')
+    found = FindAdjacent(Iteration).visit(node)
 
     mapper = {}
     for k, v in found.items():
@@ -46,6 +43,11 @@ def fold_blockable_tree(node, exclude_innermost=False):
             # Perhaps there's nothing to fold
             if len(pairwise_folds) == 1:
                 continue
+            # TODO: we do not currently support blocking if any of the foldable
+            # iterations writes to user data (need min/max loop bounds?)
+            exprs = flatten(FindNodes(Expression).visit(j.root) for j in trees[:-1])
+            if any(j.write.is_Input for j in exprs):
+                continue
             # Perform folding
             for j in pairwise_folds:
                 root, remainder = j[0], j[1:]
@@ -56,7 +58,7 @@ def fold_blockable_tree(node, exclude_innermost=False):
                     mapper[k] = None
 
     # Insert the IterationFolds in the Iteration/Expression tree
-    processed = NestedTransformer(mapper).visit(node)
+    processed = Transformer(mapper, nested=True).visit(node)
 
     return processed
 
@@ -108,6 +110,19 @@ def unfold_blocked_tree(node):
     return processed
 
 
+def is_foldable(nodes):
+    """
+    Return True if the iterable ``nodes`` consists of foldable :class:`Iteration`s,
+    False otherwise.
+    """
+    nodes = as_tuple(nodes)
+    if len(nodes) <= 1 or any(not i.is_Iteration for i in nodes):
+        return False
+    main = nodes[0]
+    return all(i.dim == main.dim and i.limits == main.limits and i.index == main.index
+               and i.properties == main.properties for i in nodes)
+
+
 def optimize_unfolded_tree(unfolded, root):
     """
     Transform folded trees to reduce the memory footprint.
@@ -144,33 +159,40 @@ def optimize_unfolded_tree(unfolded, root):
     processed = []
     for i, tree in enumerate(unfolded):
         assert len(tree) == len(root)
+
+        # We can optimize the folded trees only if they compute temporary
+        # arrays, but not if they compute input data
+        exprs = FindNodes(Expression).visit(tree[-1])
+        writes = [j.write for j in exprs if j.is_tensor]
+        if not all(j.is_Array for j in writes):
+            processed.append(compose_nodes(tree))
+            root = compose_nodes(root)
+            continue
+
         modified_tree = []
         modified_root = []
         mapper = {}
 
         # "Shrink" the iteration space
         for t1, t2 in zip(tree, root):
-            index = Symbol('%ss%d' % (t1.index, i))
-            mapper[t1.dim] = index
-
-            t1_uindex = (UnboundedIndex(index, t1.limits[0]),)
-            t2_uindex = (UnboundedIndex(index, -t1.limits[0]),)
-
+            t1_udim = IncrDimension(t1.dim, t1.limits[0], 1, "%ss%d" % (t1.index, i))
             limits = (0, t1.limits[1] - t1.limits[0], t1.symbolic_incr)
             modified_tree.append(t1._rebuild(limits=limits,
-                                             uindices=t1.uindices + t1_uindex))
+                                             uindices=t1.uindices + (t1_udim,)))
 
-            modified_root.append(t2._rebuild(uindices=t2.uindices + t2_uindex))
+            t2_udim = IncrDimension(t1.dim, -t1.limits[0], 1, "%ss%d" % (t1.index, i))
+            modified_root.append(t2._rebuild(uindices=t2.uindices + (t2_udim,)))
+
+            mapper[t1.dim] = t1_udim
 
         # Temporary arrays can now be moved onto the stack
-        exprs = FindNodes(Expression).visit(modified_tree[-1])
         if all(not j.is_Remainder for j in modified_tree):
             dimensions = tuple(j.limits[0] for j in modified_root)
-            for j in exprs:
-                if j.write.is_Array:
-                    j_dimensions = dimensions + j.write.dimensions[len(modified_root):]
+            for j in writes:
+                if j.is_Array:
+                    j_dimensions = dimensions + j.dimensions[len(modified_root):]
                     j_shape = tuple(k.symbolic_size for k in j_dimensions)
-                    j.write.update(shape=j_shape, dimensions=j_dimensions, onstack=True)
+                    j.update(shape=j_shape, dimensions=j_dimensions, scope='stack')
 
         # Substitute iteration variables within the folded trees
         modified_tree = compose_nodes(modified_tree)
@@ -214,7 +236,7 @@ class IterationFold(Iteration):
             properties = "WithProperties[%s]::" % ",".join(properties)
         index = self.index
         if self.uindices:
-            index += '[%s]' % ','.join(ccode(i.index) for i in self.uindices)
+            index += '[%s]' % ','.join(i.name for i in self.uindices)
         length = "Length %d" % len(self.folds)
         return "<%sIterationFold %s; %s; %s>" % (properties, index, self.limits, length)
 
@@ -246,3 +268,25 @@ class IterationFold(Iteration):
                       for shift, nodes in self.folds)
 
         return folds + as_tuple(root)
+
+
+class BlockDimension(IncrDimension):
+
+    @property
+    def _arg_names(self):
+        return (self.step.name,) + self.parent._arg_names
+
+    def _arg_defaults(self, **kwargs):
+        # TODO: need a heuristic to pick a default block size
+        return {self.step.name: 8}
+
+    def _arg_values(self, args, interval, grid, **kwargs):
+        if self.step.name in kwargs:
+            return {self.step.name: kwargs.pop(self.step.name)}
+        else:
+            blocksize = self._arg_defaults()[self.step.name]
+            if args[self.root.min_name] < blocksize < args[self.root.max_name]:
+                return {self.step.name: blocksize}
+            else:
+                # Avoid OOB
+                return {self.step.name: 1}

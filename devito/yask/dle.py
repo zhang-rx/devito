@@ -15,7 +15,8 @@ class YaskOmpizer(Ompizer):
         """
         Return a mapper to parallelize the :class:`Iteration`s within /root/.
         """
-        parallel = self._pragma_for(root, candidates)
+        ncollapse = self._ncollapse(root, candidates)
+        parallel = self.lang['for'](ncollapse)
 
         yask_add = namespace['code-grid-add']
 
@@ -25,7 +26,7 @@ class YaskOmpizer(Ompizer):
             # Turn increments into atomic increments
             subs = {}
             for e in FindNodes(Expression).visit(root):
-                if not e.is_increment:
+                if not e.is_Increment:
                     continue
                 # Try getting the increment components
                 try:
@@ -50,5 +51,6 @@ class YaskRewriter(AdvancedRewriter):
 
     def _pipeline(self, state):
         self._avoid_denormals(state)
+        self._loop_wrapping(state)
         if self.params['openmp'] is True:
             self._parallelize(state)

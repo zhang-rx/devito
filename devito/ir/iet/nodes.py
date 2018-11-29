@@ -4,6 +4,7 @@ from __future__ import absolute_import
 
 import abc
 import inspect
+import numbers
 from cached_property import cached_property
 from collections import Iterable, OrderedDict, namedtuple
 
@@ -12,22 +13,24 @@ import cgen as c
 from devito.cgen_utils import ccode
 from devito.ir.equations import ClusterizedEq
 from devito.ir.iet import (IterationProperty, SEQUENTIAL, PARALLEL, PARALLEL_IF_ATOMIC,
-                           VECTOR, ELEMENTAL, REMAINDER, WRAPPABLE, AFFINE, tagger, ntags)
+                           VECTOR, ELEMENTAL, REMAINDER, WRAPPABLE, AFFINE, tagger, ntags,
+                           REDUNDANT)
 from devito.ir.support import Forward, detect_io
 from devito.dimension import Dimension
 from devito.symbolics import FunctionFromPointer, as_symbol
-from devito.tools import as_tuple, filter_ordered, filter_sorted, flatten, validate_type
+from devito.tools import (Signer, as_tuple, filter_ordered, filter_sorted, flatten,
+                          validate_type)
 from devito.types import AbstractFunction, Symbol, Indexed
 
 __all__ = ['Node', 'Block', 'Denormals', 'Expression', 'Element', 'Callable',
-           'Call', 'Conditional', 'Iteration', 'List', 'LocalExpression', 'TimedList',
-           'UnboundedIndex', 'MetaCall', 'ArrayCast', 'PointerCast', 'ForeignExpression',
-           'IterationTree', 'Section', 'ExpressionBundle']
+           'Call', 'Conditional', 'Iteration', 'List', 'LocalExpression',
+           'TimedList', 'MetaCall', 'ArrayCast', 'ForeignExpression', 'Section',
+           'HaloSpot', 'IterationTree', 'ExpressionBundle', 'Increment']
 
 # First-class IET nodes
 
 
-class Node(object):
+class Node(Signer):
 
     __metaclass__ = abc.ABCMeta
 
@@ -36,11 +39,14 @@ class Node(object):
     is_Iteration = False
     is_IterationFold = False
     is_Expression = False
+    is_Increment = False
+    is_ForeignExpression = False
     is_Callable = False
     is_Call = False
     is_List = False
     is_Element = False
     is_Section = False
+    is_HaloSpot = False
     is_ExpressionBundle = False
 
     """
@@ -52,7 +58,7 @@ class Node(object):
 
     def __new__(cls, *args, **kwargs):
         obj = super(Node, cls).__new__(cls)
-        argnames = inspect.getargspec(cls.__init__).args
+        argnames = inspect.getfullargspec(cls.__init__).args
         obj._args = {k: v for k, v in zip(argnames[1:], args)}
         obj._args.update(kwargs.items())
         obj._args.update({k: None for k in argnames[1:] if k not in obj._args})
@@ -127,6 +133,9 @@ class Node(object):
         """
         raise NotImplementedError()
 
+    def _signature_items(self):
+        return (str(self.ccode),)
+
 
 class Block(Node):
 
@@ -144,6 +153,18 @@ class Block(Node):
     def __repr__(self):
         return "<%s (%d, %d, %d)>" % (self.__class__.__name__, len(self.header),
                                       len(self.body), len(self.footer))
+
+    @property
+    def functions(self):
+        return ()
+
+    @property
+    def free_symbols(self):
+        return ()
+
+    @property
+    def defines(self):
+        return ()
 
 
 class List(Block):
@@ -190,7 +211,11 @@ class Call(Node):
     @cached_property
     def free_symbols(self):
         """Return all :class:`Symbol` objects used by this :class:`Call`."""
-        free = tuple(set(flatten(p.free_symbols for p in self.params)))
+        free = set()
+        for p in self.params:
+            if isinstance(p, numbers.Number):
+                continue
+            free.update(p.free_symbols)
         # HACK: Filter dimensions to avoid them on popping onto outer parameters
         free = tuple(s for s in free if not isinstance(s, Dimension))
         return free
@@ -223,14 +248,6 @@ class Expression(Node):
     def __repr__(self):
         return "<%s::%s>" % (self.__class__.__name__,
                              filter_ordered([f.func for f in self.functions]))
-
-    def substitute(self, substitutions):
-        """Apply substitutions to the expression.
-
-        :param substitutions: Dict containing the substitutions to apply to
-                              the stored expression.
-        """
-        self.expr = self.expr.xreplace(substitutions)
 
     @property
     def dtype(self):
@@ -280,16 +297,23 @@ class Expression(Node):
         return not self.is_scalar
 
     @property
-    def is_increment(self):
+    def is_scalar_assign(self):
         """
-        Return True if the write is actually an associative and commutative increment.
+        Return True if a scalar, non-increment expression
         """
-        return self.expr.is_Increment
+        return self.is_scalar and not self.is_Increment
 
     @property
     def free_symbols(self):
         """Return all :class:`Symbol` objects used by this :class:`Expression`."""
         return tuple(self.expr.free_symbols)
+
+
+class Increment(Expression):
+
+    """A node representing a += increment."""
+
+    is_Increment = True
 
 
 class Iteration(Node):
@@ -306,9 +330,10 @@ class Iteration(Node):
     :param properties: A bag of :class:`IterationProperty` objects, decorating
                        the Iteration (sequential, parallel, vectorizable, ...).
     :param pragmas: A bag of pragmas attached to this Iteration.
-    :param uindices: a bag of UnboundedIndex objects, representing free iteration
-                     variables (i.e., the Iteration end point is independent of
-                     any of these UnboundedIndex).
+    :param uindices: a bag of :class:`DerivedDimension`s with ``dimension`` as root
+                     parent, representing additional Iteration variables with
+                     unbounded extreme (hence the "unbounded indices", shortened
+                     as "uindices").
     """
 
     is_Iteration = True
@@ -326,6 +351,8 @@ class Iteration(Node):
         if isinstance(limits, Iterable):
             assert(len(limits) == 3)
             self.limits = tuple(limits)
+        elif self.dim.is_Incr:
+            self.limits = (self.dim.symbolic_start, limits, self.dim.step)
         else:
             self.limits = (0, limits, 1)
 
@@ -339,7 +366,7 @@ class Iteration(Node):
         self.properties = as_tuple(filter_sorted(properties))
         self.pragmas = as_tuple(pragmas)
         self.uindices = as_tuple(uindices)
-        assert all(isinstance(i, UnboundedIndex) for i in self.uindices)
+        assert all(i.is_Derived and i.root is self.dim for i in self.uindices)
 
     def __repr__(self):
         properties = ""
@@ -348,16 +375,8 @@ class Iteration(Node):
             properties = "WithProperties[%s]::" % ",".join(properties)
         index = self.index
         if self.uindices:
-            index += '[%s]' % ','.join(ccode(i.index) for i in self.uindices)
+            index += '[%s]' % ','.join(i.name for i in self.uindices)
         return "<%sIteration %s; %s>" % (properties, index, self.limits)
-
-    @property
-    def defines(self):
-        """
-        Return any symbols defined in the :class:`Iteration` header.
-        """
-        dims = (self.dim, self.dim.parent) if self.dim.is_Derived else (self.dim,)
-        return dims + tuple(i.name for i in self.uindices)
 
     @property
     def is_Affine(self):
@@ -394,6 +413,13 @@ class Iteration(Node):
     @property
     def is_Remainder(self):
         return REMAINDER in self.properties
+
+    @property
+    def ncollapsed(self):
+        for i in self.properties:
+            if i.name == 'collapsed':
+                return i.val
+        return 0
 
     @property
     def tag(self):
@@ -492,10 +518,16 @@ class Iteration(Node):
         return self.bounds(finish=finish)[1]
 
     @property
+    def dimensions(self):
+        """
+        Return all :class:`Dimension` objects used in the Iteration header.
+        """
+        return tuple(self.dim._defines) + self.uindices
+
+    @property
     def functions(self):
         """
-        Return all :class:`Function` objects used in the header of
-        this :class:`Iteration`.
+        Return all :class:`Function` objects used in the Iteration header.
         """
         return ()
 
@@ -505,6 +537,13 @@ class Iteration(Node):
         return []
 
     @property
+    def defines(self):
+        """
+        Return any symbols defined in the :class:`Iteration` header.
+        """
+        return self.dimensions
+
+    @property
     def free_symbols(self):
         """
         Return all :class:`Symbol` objects used in the header of this
@@ -512,7 +551,9 @@ class Iteration(Node):
         """
         return tuple(self.symbolic_start.free_symbols) \
             + tuple(self.symbolic_end.free_symbols) \
-            + tuple(flatten(ui.free_symbols for ui in self.uindices))
+            + self.uindices \
+            + tuple(flatten(i.symbolic_start.free_symbols for i in self.uindices)) \
+            + tuple(flatten(i.symbolic_incr.free_symbols for i in self.uindices))
 
 
 class Callable(Node):
@@ -543,8 +584,8 @@ class Callable(Node):
     def __repr__(self):
         parameters = ",".join(['void*' if i.is_Object else c.dtype_to_ctype(i.dtype)
                                for i in self.parameters])
-        body = "\n\t".join([str(s) for s in self.body])
-        return "Function[%s]<%s; %s>::\n\t%s" % (self.name, self.retval, parameters, body)
+        return "%s[%s]<%s; %s>" % (self.__class__.__name__, self.name, self.retval,
+                                   parameters)
 
 
 class Conditional(Node):
@@ -576,12 +617,22 @@ class Conditional(Node):
             return "<[%s] ? [%s]" % (ccode(self.condition), repr(self.then_body))
 
     @property
+    def functions(self):
+        ret = []
+        for i in self.condition.free_symbols:
+            try:
+                ret.append(i.function)
+            except AttributeError:
+                pass
+        return tuple(ret)
+
+    @property
     def free_symbols(self):
-        """
-        Return all :class:`Symbol` objects used in the condition of this
-        :class:`Conditional`.
-        """
         return tuple(self.condition.free_symbols)
+
+    @property
+    def defines(self):
+        return ()
 
 
 # Second level IET nodes
@@ -590,32 +641,36 @@ class TimedList(List):
 
     """Wrap a Node with C-level timers."""
 
-    def __init__(self, lname, gname, body):
+    def __init__(self, timer, lname, body):
         """
-        Initialize a TimedList object.
+        Initialize a TimedList.
 
-        :param lname: Timer name in the local scope.
-        :param gname: Name of the global struct tracking all timers.
-        :param body: Timed block of code.
+        :param timer: A :class:`Timer` object.
+        :param lname: Name of the timed code block.
+        :param body: Timed code block.
         """
         self._name = lname
-        # TODO: need omp master pragma to be thread safe
+        self._timer = timer
         header = [c.Statement("struct timeval start_%s, end_%s" % (lname, lname)),
                   c.Statement("gettimeofday(&start_%s, NULL)" % lname)]
         footer = [c.Statement("gettimeofday(&end_%s, NULL)" % lname),
                   c.Statement(("%(gn)s->%(ln)s += " +
                                "(double)(end_%(ln)s.tv_sec-start_%(ln)s.tv_sec)+" +
                                "(double)(end_%(ln)s.tv_usec-start_%(ln)s.tv_usec)" +
-                               "/1000000") % {'gn': gname, 'ln': lname})]
+                               "/1000000") % {'gn': timer.name, 'ln': lname})]
         super(TimedList, self).__init__(header, body, footer)
-
-    def __repr__(self):
-        body = "\n\t".join([str(s) for s in self.body])
-        return "%s::\n\t%s" % (self.__class__.__name__, body)
 
     @property
     def name(self):
         return self._name
+
+    @property
+    def timer(self):
+        return self._timer
+
+    @property
+    def free_symbols(self):
+        return (self.timer,)
 
 
 class Denormals(List):
@@ -668,41 +723,6 @@ class ArrayCast(Node):
         return (self.function, ) + as_tuple(sizes)
 
 
-class PointerCast(Node):
-
-    """
-    A node encapsulating a cast of a raw C pointer to a
-    struct or object.
-    """
-
-    def __init__(self, object):
-        self.object = object
-
-    @property
-    def functions(self):
-        """
-        Return all :class:`Function` objects used by this :class:`PointerCast`
-        """
-        return ()
-
-    @property
-    def defines(self):
-        """
-        Return the base symbol an :class:`PointerCast` defines.
-        """
-        return ()
-
-    @property
-    def free_symbols(self):
-        """
-        Return the symbols required to perform an :class:`PointerCast`.
-
-        This includes the :class:`AbstractFunction` object that
-        defines the data, as well as the dimension sizes.
-        """
-        return (self.object, )
-
-
 class LocalExpression(Expression):
 
     """
@@ -720,6 +740,8 @@ class LocalExpression(Expression):
 class ForeignExpression(Expression):
 
     """A node representing a SymPy :class:`FunctionFromPointer` expression."""
+
+    is_ForeignExpression = True
 
     @validate_type(('expr', FunctionFromPointer),
                    ('dtype', type))
@@ -745,7 +767,7 @@ class ForeignExpression(Expression):
             return None
 
     @property
-    def is_increment(self):
+    def is_Increment(self):
         return self._is_increment
 
     @property
@@ -781,6 +803,32 @@ class Section(List):
     @property
     def roots(self):
         return self.body
+
+
+class HaloSpot(List):
+
+    is_HaloSpot = True
+
+    def __init__(self, halo_scheme, body=None, properties=None):
+        super(HaloSpot, self).__init__(body=body)
+        self.halo_scheme = halo_scheme
+        self.properties = as_tuple(properties)
+
+    @property
+    def fmapper(self):
+        return self.halo_scheme.fmapper
+
+    @property
+    def mask(self):
+        return self.halo_scheme.mask
+
+    @property
+    def is_Redundant(self):
+        return REDUNDANT in self.properties
+
+    def __repr__(self):
+        redundant = "[redundant]" if self.is_Redundant else ""
+        return "<HaloSpot%s>" % redundant
 
 
 class ExpressionBundle(List):
@@ -822,49 +870,16 @@ class IterationTree(tuple):
     def inner(self):
         return self[-1] if self else None
 
+    @property
+    def dimensions(self):
+        return [i.dim for i in self]
+
     def __repr__(self):
         return "IterationTree%s" % super(IterationTree, self).__repr__()
 
     def __getitem__(self, key):
         ret = super(IterationTree, self).__getitem__(key)
         return IterationTree(ret) if isinstance(key, slice) else ret
-
-
-class UnboundedIndex(object):
-
-    """
-    A generic loop iteration index that can be used in a :class:`Iteration` to
-    add a non-linear traversal of the iteration space.
-    """
-
-    def __init__(self, index, start=0, step=None, dim=None, expr=None):
-        self.name = index
-        self.index = index
-        self.dim = dim
-        self.expr = expr
-
-        try:
-            self.start = as_symbol(start)
-        except TypeError:
-            self.start = start
-
-        try:
-            if step is None:
-                self.step = index + 1
-            else:
-                self.step = as_symbol(step)
-        except TypeError:
-            self.step = step
-
-    @property
-    def free_symbols(self):
-        """
-        Return the symbols used by this :class:`UnboundedIndex`.
-        """
-        free = self.index.free_symbols
-        free.update(self.start.free_symbols)
-        free.update(self.step.free_symbols)
-        return tuple(free)
 
 
 MetaCall = namedtuple('MetaCall', 'root local')

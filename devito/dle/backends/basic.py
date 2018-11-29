@@ -5,11 +5,12 @@ from collections import OrderedDict
 import cgen as c
 import numpy as np
 
+from devito.dimension import IncrDimension
 from devito.dle.backends import AbstractRewriter, dle_pass, complang_ALL
-from devito.ir.iet import (Denormals, Call, Callable, List, UnboundedIndex,
-                           NestedTransformer, Transformer, FindSymbols,
-                           retrieve_iteration_tree, filter_iterations,
-                           derive_parameters, ArrayCast)
+from devito.ir.iet import (Denormals, Call, Callable, List, ArrayCast,
+                           Transformer, FindSymbols, retrieve_iteration_tree,
+                           filter_iterations, derive_parameters)
+from devito.parameters import configuration
 from devito.symbolics import as_symbol
 from devito.tools import flatten
 from devito.types import Scalar
@@ -19,7 +20,7 @@ class BasicRewriter(AbstractRewriter):
 
     def _pipeline(self, state):
         self._avoid_denormals(state)
-        self._create_elemental_functions(state)
+        self._create_efuncs(state)
 
     @dle_pass
     def _avoid_denormals(self, nodes, state):
@@ -33,7 +34,7 @@ class BasicRewriter(AbstractRewriter):
                 {'includes': ('xmmintrin.h', 'pmmintrin.h')})
 
     @dle_pass
-    def _create_elemental_functions(self, nodes, state):
+    def _create_efuncs(self, nodes, state):
         """
         Extract :class:`Iteration` sub-trees and move them into :class:`Callable`s.
 
@@ -70,16 +71,16 @@ class BasicRewriter(AbstractRewriter):
                 # Iteration unbounded indices
                 ufunc = [Scalar(name='%s_ub%d' % (name, j), dtype=np.int32)
                          for j in range(len(i.uindices))]
-                defined_args.update({uf.name: j.start
+                defined_args.update({uf.name: j.symbolic_start
                                      for uf, j in zip(ufunc, i.uindices)})
                 limits = [Scalar(name=start.name, dtype=np.int32),
                           Scalar(name=finish.name, dtype=np.int32), 1]
-                uindices = [UnboundedIndex(j.index, i.dim + as_symbol(k))
+                uindices = [IncrDimension(j.parent, i.dim + as_symbol(k), 1, j.name)
                             for j, k in zip(i.uindices, ufunc)]
                 free.append(i._rebuild(limits=limits, offsets=None, uindices=uindices))
 
             # Construct elemental function body, and inspect it
-            free = NestedTransformer(dict((zip(target, free)))).visit(root)
+            free = Transformer(dict((zip(target, free))), nested=True).visit(root)
 
             # Insert array casts for all non-defined
             f_symbols = FindSymbols('symbolics').visit(free)
@@ -110,9 +111,9 @@ class BasicRewriter(AbstractRewriter):
         # Transform the main tree
         processed = Transformer(mapper).visit(nodes)
 
-        return processed, {'elemental_functions': functions.values()}
+        return processed, {'efuncs': functions.values()}
 
     def _compiler_decoration(self, name, default=None):
-        key = self.params['compiler'].__class__.__name__
+        key = configuration['compiler'].__class__.__name__
         complang = complang_ALL.get(key, {})
         return complang.get(name, default)

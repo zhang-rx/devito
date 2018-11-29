@@ -4,7 +4,7 @@ import numpy as np
 
 from devito import Dimension, Function, SubDimension, Eq, first_derivative
 from devito.exceptions import InvalidArgument
-from devito.finite_difference import transpose
+from devito.finite_differences.finite_difference import transpose
 
 from sympy import sqrt, solve, finite_diff_weights
 
@@ -24,7 +24,7 @@ class ABC(object):
 
     def __init__(self, model, field, forward=True, **kwargs):
         self.nbpml = int(model.nbpml)
-        self.full_shape = model.shape_domain
+        self.full_shape = model.domain_size
         self.ndim = model.dim
         self.indices = field.grid.dimensions
         self.field = field
@@ -154,7 +154,7 @@ class Clayton(object):
 
         def __init__(self, model, field, forward=True, **kwargs):
             self.nbpml = int(model.nbpml)
-            self.full_shape = model.shape_domain
+            self.full_shape = model.domain_size
             self.ndim = model.dim
             self.indices = field.grid.dimensions
             self.field = field

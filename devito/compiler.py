@@ -1,22 +1,88 @@
 from functools import partial
 from hashlib import sha1
 from os import environ, path
-from tempfile import mkdtemp
 from time import time
-from sys import platform
 from distutils import version
-import subprocess
+from subprocess import DEVNULL, CalledProcessError, check_output, check_call
+import platform
+import warnings
 
 import numpy.ctypeslib as npct
-from codepy.jit import extension_file_from_string
+from codepy.jit import compile_from_string
 from codepy.toolchain import GCCToolchain
 
 from devito.exceptions import CompilationError
-from devito.logger import log
+from devito.logger import debug, warning
 from devito.parameters import configuration
-from devito.tools import change_directory, sniff_compiler_version
+from devito.tools import (as_tuple, change_directory, filter_ordered,
+                          memoized_func, make_tempdir)
 
 __all__ = ['jit_compile', 'load', 'make', 'GNUCompiler']
+
+
+def sniff_compiler_version(cc):
+    """
+    Detect the compiler version.
+
+    Adapted from: ::
+
+        https://github.com/OP2/PyOP2/
+    """
+    try:
+        ver = check_output([cc, "--version"]).decode("utf-8")
+    except (CalledProcessError, UnicodeDecodeError):
+        return version.LooseVersion("unknown")
+
+    if ver.startswith("gcc"):
+        compiler = "gcc"
+    elif ver.startswith("clang"):
+        compiler = "clang"
+    elif ver.startswith("Apple LLVM"):
+        compiler = "clang"
+    elif ver.startswith("icc"):
+        compiler = "icc"
+    else:
+        compiler = "unknown"
+
+    ver = version.LooseVersion("unknown")
+    if compiler in ["gcc", "icc"]:
+        try:
+            # gcc-7 series only spits out patch level on dumpfullversion.
+            ver = check_output([cc, "-dumpfullversion"], stderr=DEVNULL).decode("utf-8")
+            ver = '.'.join(ver.strip().split('.')[:3])
+            ver = version.StrictVersion(ver)
+        except CalledProcessError:
+            try:
+                ver = check_output([cc, "-dumpversion"], stderr=DEVNULL).decode("utf-8")
+                ver = '.'.join(ver.strip().split('.')[:3])
+                ver = version.StrictVersion(ver)
+            except (CalledProcessError, UnicodeDecodeError):
+                pass
+        except UnicodeDecodeError:
+            pass
+
+    # Pure integer versions (e.g., ggc5, rather than gcc5.0) need special handling
+    try:
+        ver = version.StrictVersion(float(ver))
+    except TypeError:
+        pass
+
+    return ver
+
+
+def sniff_mpi_distro(mpiexec):
+    """
+    Detect the MPI version.
+    """
+    try:
+        ver = check_output([mpiexec, "--version"]).decode("utf-8")
+        if "open-mpi" in ver:
+            return 'OpenMPI'
+        elif "HYDRA" in ver:
+            return 'MPICH'
+    except (CalledProcessError, UnicodeDecodeError):
+        pass
+    return 'unknown'
 
 
 class Compiler(GCCToolchain):
@@ -40,10 +106,10 @@ class Compiler(GCCToolchain):
         * :data:`self.library_dirs`
         * :data:`self.defines`
         * :data:`self.src_ext`
-        * :data:`self.lib_ext`
+        * :data:`self.so_ext`
         * :data:`self.undefines`
 
-    Two additional parameters may be passed.
+    Two additional keyword arguments may be passed.
     :param suffix: A string indicating a specific compiler version available on
                    the system. For example, assuming ``compiler=gcc`` and
                    ``suffix='4.9'``, then the ``gcc-4.9`` program will be used
@@ -56,13 +122,19 @@ class Compiler(GCCToolchain):
 
     CC = 'unknown'
     CPP = 'unknown'
+    MPICC = 'unknown'
+    MPICXX = 'unknown'
 
     def __init__(self, **kwargs):
         super(Compiler, self).__init__(**kwargs)
 
         self.suffix = kwargs.get('suffix')
-        self.cc = self.CC if kwargs.get('cpp', False) is False else self.CPP
-        self.cc = self.cc if self.suffix is None else ('%s-%s' % (self.cc, self.suffix))
+        if not kwargs.get('mpi'):
+            self.cc = self.CC if kwargs.get('cpp', False) is False else self.CPP
+            self.cc = self.cc if self.suffix is None else ('%s-%s' %
+                                                           (self.cc, self.suffix))
+        else:
+            self.cc = self.MPICC if kwargs.get('cpp', False) is False else self.MPICXX
         self.ld = self.cc  # Wanted by the superclass
 
         self.cflags = ['-O3', '-g', '-fPIC', '-Wall', '-std=c99']
@@ -75,7 +147,15 @@ class Compiler(GCCToolchain):
         self.undefines = []
 
         self.src_ext = 'c' if kwargs.get('cpp', False) is False else 'cpp'
-        self.lib_ext = 'so'
+
+        if platform.system() == "Linux":
+            self.so_ext = '.so'
+        elif platform.system() == "Darwin":
+            self.so_ext = '.dylib'
+        elif platform.system() == "Windows":
+            self.so_ext = '.dll'
+        else:
+            raise NotImplementedError("Unsupported platform %s" % platform)
 
         if self.suffix is not None:
             try:
@@ -92,12 +172,30 @@ class Compiler(GCCToolchain):
     def __repr__(self):
         return "DevitoJITCompiler[%s]" % self.__class__.__name__
 
+    def __getstate__(self):
+        # The superclass would otherwise only return a subset of attributes
+        return self.__dict__
+
+    def add_include_dirs(self, dirs):
+        self.include_dirs = filter_ordered(self.include_dirs + list(as_tuple(dirs)))
+
+    def add_library_dirs(self, dirs):
+        self.library_dirs = filter_ordered(self.library_dirs + list(as_tuple(dirs)))
+
+    def add_libraries(self, libs):
+        self.libraries = filter_ordered(self.libraries + list(as_tuple(libs)))
+
+    def add_ldflags(self, flags):
+        self.ldflags = filter_ordered(self.ldflags + list(as_tuple(flags)))
+
 
 class GNUCompiler(Compiler):
     """Set of standard compiler flags for the GCC toolchain."""
 
     CC = 'gcc'
     CPP = 'g++'
+    MPICC = 'mpicc'
+    MPICXX = 'mpicxx'
 
     def __init__(self, *args, **kwargs):
         super(GNUCompiler, self).__init__(*args, **kwargs)
@@ -116,10 +214,7 @@ class GNUCompiler(Compiler):
 
 class GNUCompilerNoAVX(GNUCompiler):
     """Set of compiler flags for GCC but with AVX suppressed. This is
-    a work around for a known gcc bug on MAC OS."
-
-    :param openmp: Boolean indicating if openmp is enabled. False by default
-    """
+    a work around for a known gcc bug on MAC OS."""
 
     def __init__(self, *args, **kwargs):
         super(GNUCompilerNoAVX, self).__init__(*args, **kwargs)
@@ -127,29 +222,23 @@ class GNUCompilerNoAVX(GNUCompiler):
 
 
 class ClangCompiler(Compiler):
-    """Set of standard compiler flags for the clang toolchain
-
-    :param openmp: Boolean indicating if openmp is enabled. False by default
-
-    Note: Genrates warning if openmp is disabled.
-    """
+    """Set of standard compiler flags for the clang toolchain."""
 
     CC = 'clang'
     CPP = 'clang++'
 
     def __init__(self, *args, **kwargs):
         super(ClangCompiler, self).__init__(*args, **kwargs)
-        self.lib_ext = 'dylib'
+        self.cflags += ['-march=native', '-Wno-unused-result', '-Wno-unused-variable']
 
 
 class IntelCompiler(Compiler):
-    """Set of standard compiler flags for the Intel toolchain.
-
-    :param openmp: Boolean indicating if openmp is enabled. False by default
-    """
+    """Set of standard compiler flags for the Intel toolchain."""
 
     CC = 'icc'
     CPP = 'icpc'
+    MPICC = 'mpiicc'
+    MPICXX = 'mpicxx'
 
     def __init__(self, *args, **kwargs):
         super(IntelCompiler, self).__init__(*args, **kwargs)
@@ -170,13 +259,13 @@ class IntelCompiler(Compiler):
 
 
 class IntelKNLCompiler(IntelCompiler):
-    """Set of standard compiler flags for the clang toolchain"""
+    """Set of standard compiler flags for the Intel toolchain on a KNL system."""
 
     def __init__(self, *args, **kwargs):
         super(IntelKNLCompiler, self).__init__(*args, **kwargs)
         self.cflags += ["-xMIC-AVX512"]
         if not configuration['openmp']:
-            log("WARNING: Running on Intel KNL without OpenMP is highly discouraged")
+            warning("Running on Intel KNL without OpenMP is highly discouraged")
 
 
 class CustomCompiler(Compiler):
@@ -191,6 +280,8 @@ class CustomCompiler(Compiler):
 
     CC = environ.get('CC', 'gcc')
     CPP = environ.get('CPP', 'g++')
+    MPICC = environ.get('MPICC', 'mpicc')
+    MPICXX = environ.get('MPICXX', 'mpicxx')
 
     def __init__(self, *args, **kwargs):
         super(CustomCompiler, self).__init__(*args, **kwargs)
@@ -201,57 +292,92 @@ class CustomCompiler(Compiler):
             self.ldflags += environ.get('OMP_LDFLAGS', '-fopenmp').split(' ')
 
 
-def get_tmp_dir():
-    """Function to get a temp directory.
-
-    :return: Path to a devito-specific tmp directory
+@memoized_func
+def get_jit_dir():
     """
-    global _devito_compiler_tmpdir
-    try:
-        path.exists(_devito_compiler_tmpdir)
-    except:
-        _devito_compiler_tmpdir = mkdtemp(prefix="devito-")
-
-    return _devito_compiler_tmpdir
+    A deterministic temporary directory for jit-compiled objects.
+    """
+    return make_tempdir('jitcache')
 
 
-def load(basename, compiler):
-    """Load a compiled library
+@memoized_func
+def get_codepy_dir():
+    """
+    A deterministic temporary directory for the codepy cache.
+    """
+    return make_tempdir('codepy')
 
-    :param basename: Name of the .so file.
+
+def load(soname):
+    """
+    Load a compiled shared object.
+
+    :param soname: Name of the .so file (w/o the suffix).
+
+    :return: The loaded shared object.
+    """
+    return npct.load_library(str(get_jit_dir().joinpath(soname)), '.')
+
+
+def save(soname, binary, compiler):
+    """
+    Store a binary into a file within a temporary directory.
+
+    :param soname: Name of the .so file (w/o the suffix).
+    :param binary: The binary data.
     :param compiler: The toolchain used for compilation.
-    :return: The loaded library.
     """
-    return npct.load_library(basename, '.')
+    sofile = get_jit_dir().joinpath(soname).with_suffix(compiler.so_ext)
+    if sofile.is_file():
+        debug("%s: `%s` was not saved in `%s` as it already exists"
+              % (compiler, sofile.name, get_jit_dir()))
+    else:
+        with open(str(sofile), 'wb') as f:
+            f.write(binary)
+        debug("%s: `%s` successfully saved in `%s`"
+              % (compiler, sofile.name, get_jit_dir()))
 
 
-def jit_compile(ccode, compiler):
-    """JIT compile the given ccode.
+def jit_compile(soname, code, compiler):
+    """
+    JIT compile the given C/C++ ``code``.
 
-    :param ccode: String of C source code.
+    This function relies upon codepy's ``compile_from_string``, which performs
+    caching of compilation units and avoids potential race conditions due to
+    multiple processing trying to compile the same object.
+
+    :param soname: A unique name for the jit-compiled shared object.
+    :param code: String of C source code.
     :param compiler: The toolchain used for compilation.
-
-    :return: The name of the compilation unit.
     """
-    hash_key = sha1(str(ccode).encode()).hexdigest()
-    basename = path.join(get_tmp_dir(), hash_key)
+    target = str(get_jit_dir().joinpath(soname))
+    src_file = "%s.%s" % (target, compiler.src_ext)
 
-    src_file = "%s.%s" % (basename, compiler.src_ext)
-    if platform == "linux" or platform == "linux2":
-        lib_file = "%s.so" % basename
-    elif platform == "darwin":
-        lib_file = "%s.dylib" % basename
-    elif platform == "win32" or platform == "win64":
-        lib_file = "%s.dll" % basename
+    # This makes a suite of cache directories based on the soname
+    cache_dir = get_codepy_dir().joinpath(soname[:7])
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    tic = time()
-    extension_file_from_string(toolchain=compiler, ext_file=lib_file,
-                               source_string=ccode, source_name=src_file,
-                               debug=configuration['debug_compiler'])
-    toc = time()
-    log("%s: compiled %s [%.2f s]" % (compiler, src_file, toc-tic))
+    # `catch_warnings` suppresses codepy complaining that it's taking
+    # too long to acquire the cache lock. This warning can only appear
+    # in a multiprocess session, typically (but not necessarily) when
+    # many processes are frequently attempting jit-compilation (e.g.,
+    # when running the test suite in parallel)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
 
-    return basename
+        tic = time()
+        # Spinlock in case of MPI
+        sleep_delay = 0 if configuration['mpi'] else 1
+        _, _, _, recompiled = compile_from_string(compiler, target, code, src_file,
+                                                  cache_dir=cache_dir,
+                                                  debug=configuration['debug-compiler'],
+                                                  sleep_delay=sleep_delay)
+        toc = time()
+
+    if recompiled:
+        debug("%s: compiled `%s` [%.2f s]" % (compiler, src_file, toc-tic))
+    else:
+        debug("%s: cache hit `%s` [%.2f s]" % (compiler, src_file, toc-tic))
 
 
 def make(loc, args):
@@ -259,8 +385,8 @@ def make(loc, args):
     Invoke ``make`` command from within ``loc`` with arguments ``args``.
     """
     hash_key = sha1((loc + str(args)).encode()).hexdigest()
-    logfile = path.join(get_tmp_dir(), "%s.log" % hash_key)
-    errfile = path.join(get_tmp_dir(), "%s.err" % hash_key)
+    logfile = path.join(get_jit_dir(), "%s.log" % hash_key)
+    errfile = path.join(get_jit_dir(), "%s.err" % hash_key)
 
     tic = time()
     with change_directory(loc):
@@ -272,15 +398,15 @@ def make(loc, args):
                 lf.write(" ".join(command))
                 lf.write("\n\n")
                 try:
-                    subprocess.check_call(command, stderr=ef, stdout=lf)
-                except subprocess.CalledProcessError as e:
+                    check_call(command, stderr=ef, stdout=lf)
+                except CalledProcessError as e:
                     raise CompilationError('Command "%s" return error status %d. '
                                            'Unable to compile code.\n'
                                            'Compile log in %s\n'
                                            'Compile errors in %s\n' %
                                            (e.cmd, e.returncode, logfile, errfile))
     toc = time()
-    log("Make <%s>: run in [%.2f s]" % (" ".join(args), toc-tic))
+    debug("Make <%s>: run in [%.2f s]" % (" ".join(args), toc-tic))
 
 
 # Registry dict for deriving Compiler classes according to the environment variable
@@ -300,4 +426,4 @@ compiler_registry = {
     'knl': IntelKNLCompiler,
 }
 compiler_registry.update({'gcc-%s' % i: partial(GNUCompiler, suffix=i)
-                          for i in ['4.9', '5', '6', '7']})
+                          for i in ['4.9', '5', '6', '7', '8']})

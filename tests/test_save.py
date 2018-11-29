@@ -1,8 +1,13 @@
+import pytest
 import numpy as np
-from sympy import solve
-from conftest import skipif_yask
 
-from devito import Grid, Eq, Operator, TimeFunction
+from conftest import skipif_backend
+
+from devito import Buffer, Grid, Eq, Operator, TimeFunction, solve, configuration
+
+
+pytestmark = pytest.mark.skipif(configuration['backend'] == 'ops',
+                                reason="testing is currently restricted")
 
 
 def initial(nt, nx, ny):
@@ -29,13 +34,29 @@ def run_simulation(save=False, dx=0.01, dy=0.01, a=0.5, timesteps=100):
                      initializer=initializer, time_order=1, space_order=2)
 
     eqn = Eq(u.dt, a * (u.dx2 + u.dy2))
-    stencil = solve(eqn, u.forward)[0]
+    stencil = solve(eqn, u.forward)
     op = Operator(Eq(u.forward, stencil))
     op.apply(time=timesteps-2, dt=dt)
 
     return u.data[timesteps - 1]
 
 
-@skipif_yask
+@skipif_backend(['yask'])
 def test_save():
     assert(np.array_equal(run_simulation(True), run_simulation()))
+
+
+def test_buffer_api():
+    """Tests memory allocation with different values of ``save``."""
+    grid = Grid(shape=(3, 3))
+    u0 = TimeFunction(name='u', grid=grid, time_order=2)
+    u1 = TimeFunction(name='u', grid=grid, save=20, time_order=2)
+    u2 = TimeFunction(name='u', grid=grid, save=Buffer(2), time_order=2)
+
+    assert u0.shape[TimeFunction._time_position] == 3
+    assert u1.shape[TimeFunction._time_position] == 20
+    assert u2.shape[TimeFunction._time_position] == 2
+
+    assert u0._time_buffering
+    assert not u1._time_buffering
+    assert u2._time_buffering

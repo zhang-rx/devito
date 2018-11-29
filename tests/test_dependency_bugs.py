@@ -1,8 +1,14 @@
 import numpy as np
+import pytest
 from numpy.random import rand
 
+from devito import configuration
 
-def numpy_dot():
+pytestmark = pytest.mark.skipif(configuration['backend'] == 'ops',
+                                reason="testing is currently restricted")
+
+
+def test_numpy_dot():
     # Checking for bug in numpy.dot
     # https://github.com/ContinuumIO/anaconda-issues/issues/7457
 

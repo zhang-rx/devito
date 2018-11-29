@@ -6,6 +6,27 @@ from examples.seismic.boundaries import ABC
 from devito.finite_difference import centered, first_derivative, right, transpose
 
 
+def second_order_stencil(model, u, v, H0, Hz):
+    """
+    Creates the stencil corresponding to the second order TTI wave equation
+    u.dt2 =  (epsilon * H0 + delta * Hz) - damp * u.dt
+    v.dt2 =  (delta * H0 + Hz) - damp * v.dt
+    """
+    # Stencils
+    m, damp, delta, epsilon = model.m, model.damp, model.delta, model.epsilon
+    s = model.grid.stepping_dim.spacing
+    stencilp = 1.0 / (2.0 * m + s * damp) * \
+        (4.0 * m * u + (s * damp - 2.0 * m) *
+         u.backward + 2.0 * s ** 2 * (epsilon * H0 + delta * Hz))
+    stencilr = 1.0 / (2.0 * m + s * damp) * \
+        (4.0 * m * v + (s * damp - 2.0 * m) *
+         v.backward + 2.0 * s ** 2 * (delta * H0 + Hz))
+    first_stencil = Eq(u.forward, stencilp)
+    second_stencil = Eq(v.forward, stencilr)
+    stencils = [first_stencil, second_stencil]
+    return stencils
+
+
 def Gxx_shifted(field, costheta, sintheta, cosphi, sinphi, space_order):
     """
     3D rotated second order derivative in the direction x as an average of
@@ -187,6 +208,7 @@ def Gzz_centered(field, costheta, sintheta, cosphi, sinphi, space_order):
                                                 side=centered, order=order1) +
            costheta * first_derivative(field, dim=z,
                                        side=centered, order=order1))
+
     Gzz = (first_derivative(Gz * sintheta * cosphi,
                             dim=x, side=centered, order=order1,
                             matvec=transpose) +
@@ -257,7 +279,7 @@ def Gxx_centered_2d(field, costheta, sintheta, space_order):
     return field.laplace - Gzz_centered_2d(field, costheta, sintheta, space_order)
 
 
-def kernel_shifted_2d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
+def kernel_shifted_2d(model, u, v, space_order):
     """
     TTI finite difference kernel. The equation we solve is:
 
@@ -270,19 +292,19 @@ def kernel_shifted_2d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
 
     :param u: first TTI field
     :param v: second TTI field
-    :param costheta: cosine of the tilt angle
-    :param sintheta:  sine of the tilt angle
-    :param cosphi: cosine of the azymuth angle, has to be 0 in 2D
-    :param sinphi: sine of the azymuth angle, has to be 0 in 2D
     :param space_order: discretization order
     :return: u and v component of the rotated Laplacian in 2D
     """
+    # Tilt and azymuth setup
+    costheta = cos(model.theta)
+    sintheta = sin(model.theta)
+
     Gxx = Gxx_shifted_2d(u, costheta, sintheta, space_order)
     Gzz = Gzz_shifted_2d(v, costheta, sintheta, space_order)
-    return Gxx, Gzz
+    return second_order_stencil(model, u, v, Gxx, Gzz)
 
 
-def kernel_shifted_3d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
+def kernel_shifted_3d(model, u, v, space_order):
     """
     TTI finite difference kernel. The equation we solve is:
 
@@ -295,20 +317,21 @@ def kernel_shifted_3d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
 
     :param u: first TTI field
     :param v: second TTI field
-    :param costheta: cosine of the tilt angle
-    :param sintheta:  sine of the tilt angle
-    :param cosphi: cosine of the azymuth angle
-    :param sinphi: sine of the azymuth angle
     :param space_order: discretization order
     :return: u and v component of the rotated Laplacian in 3D
     """
+    # Tilt and azymuth setup
+    costheta = cos(model.theta)
+    sintheta = sin(model.theta)
+    cosphi = cos(model.phi)
+    sinphi = sin(model.phi)
     Gxx = Gxx_shifted(u, costheta, sintheta, cosphi, sinphi, space_order)
     Gyy = Gyy_shifted(u, cosphi, sinphi, space_order)
     Gzz = Gzz_shifted(v, costheta, sintheta, cosphi, sinphi, space_order)
-    return Gxx + Gyy, Gzz
+    return second_order_stencil(model, u, v, Gxx + Gyy, Gzz)
 
 
-def kernel_centered_2d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
+def kernel_centered_2d(model, u, v, space_order):
     """
     TTI finite difference kernel. The equation we solve is:
 
@@ -321,19 +344,19 @@ def kernel_centered_2d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
 
     :param u: first TTI field
     :param v: second TTI field
-    :param costheta: cosine of the tilt angle
-    :param sintheta:  sine of the tilt angle
-    :param cosphi: cosine of the azymuth angle, has to be 0 in 2D
-    :param sinphi: sine of the azymuth angle, has to be 0 in 2D
     :param space_order: discretization order
     :return: u and v component of the rotated Laplacian in 2D
     """
+    # Tilt and azymuth setup
+    costheta = cos(model.theta)
+    sintheta = sin(model.theta)
+
     Gxx = Gxx_centered_2d(u, costheta, sintheta, space_order)
     Gzz = Gzz_centered_2d(v, costheta, sintheta, space_order)
-    return Gxx, Gzz
+    return second_order_stencil(model, u, v, Gxx, Gzz)
 
 
-def kernel_centered_3d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
+def kernel_centered_3d(model, u, v, space_order):
     """
     TTI finite difference kernel. The equation we solve is:
 
@@ -346,19 +369,130 @@ def kernel_centered_3d(u, v, costheta, sintheta, cosphi, sinphi, space_order):
 
     :param u: first TTI field
     :param v: second TTI field
-    :param costheta: cosine of the tilt angle
-    :param sintheta:  sine of the tilt angle
-    :param cosphi: cosine of the azymuth angle
-    :param sinphi: sine of the azymuth angle
-    :param space_order: discretization order
     :return: u and v component of the rotated Laplacian in 2D
     """
+    # Tilt and azymuth setup
+    costheta = cos(model.theta)
+    sintheta = sin(model.theta)
+    cosphi = cos(model.phi)
+    sinphi = sin(model.phi)
+
     Gxx = Gxxyy_centered(u, costheta, sintheta, cosphi, sinphi, space_order)
     Gzz = Gzz_centered(v, costheta, sintheta, cosphi, sinphi, space_order)
-    return Gxx, Gzz
+    return second_order_stencil(model, u, v, Gxx, Gzz)
 
 
-def ForwardOperator(model, source, receiver, space_order=4,
+def particle_velocity_fields(model, space_order):
+    """
+    Initialize partcle vleocity fields for staggered tti
+    """
+    if model.grid.dim == 2:
+        x, z = model.space_dimensions
+        stagg_x = x
+        stagg_z = z
+        x, z = model.grid.dimensions
+        # Create symbols for forward wavefield, source and receivers
+        vx = TimeFunction(name='vx', grid=model.grid, staggered=stagg_x,
+                          time_order=1, space_order=space_order)
+        vz = TimeFunction(name='vz', grid=model.grid, staggered=stagg_z,
+                          time_order=1, space_order=space_order)
+        vy = None
+    elif model.grid.dim == 3:
+        x, y, z = model.space_dimensions
+        stagg_x = x
+        stagg_y = y
+        stagg_z = z
+        x, y, z = model.grid.dimensions
+        # Create symbols for forward wavefield, source and receivers
+        vx = TimeFunction(name='vx', grid=model.grid, staggered=stagg_x,
+                          time_order=1, space_order=space_order)
+        vy = TimeFunction(name='vy', grid=model.grid, staggered=stagg_y,
+                          time_order=1, space_order=space_order)
+        vz = TimeFunction(name='vz', grid=model.grid, staggered=stagg_z,
+                          time_order=1, space_order=space_order)
+
+    return vx, vz, vy
+
+
+def kernel_staggered_2d(model, u, v, space_order):
+    """
+    TTI finite difference. The equation solved is:
+    vx.dt = - u.dx
+    vz.dt = - v.dx
+    m * v.dt = - sqrt(1 + 2 delta) vx.dx - vz.dz + Fh
+    m * u.dt = - (1 + 2 epsilon) vx.dx - sqrt(1 + 2 delta) vz.dz + Fv
+    """
+    dampl = 1 - model.damp
+    m, epsilon, delta, theta = (model.m, model.epsilon, model.delta, model.theta)
+    s = model.grid.stepping_dim.spacing
+    x, z = model.grid.dimensions
+    # Staggered setup
+    vx, vz, _ = particle_velocity_fields(model, space_order)
+
+    # Stencils
+    phdx = cos(theta) * u.dx - sin(theta) * u.dy
+    u_vx = Eq(vx.forward, dampl * vx - dampl * s * phdx)
+
+    pvdz = sin(theta) * v.dx + cos(theta) * v.dy
+    u_vz = Eq(vz.forward, dampl * vz - dampl * s * pvdz)
+
+    dvx = cos(theta) * vx.forward.dx - sin(theta) * vx.forward.dy
+    dvz = sin(theta) * vz.forward.dx + cos(theta) * vz.forward.dy
+
+    # u and v equations
+    pv_eq = Eq(v.forward, dampl * (v - s / m * (delta * dvx + dvz)))
+
+    ph_eq = Eq(u.forward, dampl * (u - s / m * (epsilon * dvx + delta * dvz)))
+
+    return [u_vx, u_vz] + [pv_eq, ph_eq]
+
+
+def kernel_staggered_3d(model, u, v, space_order):
+    """
+    TTI finite difference. The equation solved is:
+    vx.dt = - u.dx
+    vy.dt = - u.dx
+    vz.dt = - v.dx
+    m * v.dt = - sqrt(1 + 2 delta) (vx.dx + vy.dy) - vz.dz + Fh
+    m * u.dt = - (1 + 2 epsilon) (vx.dx + vy.dy) - sqrt(1 + 2 delta) vz.dz + Fv
+    """
+    dampl = 1 - model.damp
+    m, epsilon, delta, theta, phi = (model.m, model.epsilon, model.delta,
+                                     model.theta, model.phi)
+    s = model.grid.stepping_dim.spacing
+    x, y, z = model.grid.dimensions
+    # Staggered setup
+    vx, vz, vy = particle_velocity_fields(model, space_order)
+    # Stencils
+    phdx = (cos(theta) * cos(phi) * u.dx +
+            cos(theta) * sin(phi) * u.dyc -
+            sin(theta) * u.dzc)
+    u_vx = Eq(vx.forward, dampl * vx - dampl * s * phdx)
+
+    phdy = -sin(phi) * u.dxc + cos(phi) * u.dy
+    u_vy = Eq(vy.forward, dampl * vy - dampl * s * phdy)
+
+    pvdz = (sin(theta) * cos(phi) * v.dxc +
+            sin(theta) * sin(phi) * v.dyc +
+            cos(theta) * v.dz)
+    u_vz = Eq(vz.forward, dampl * vz - dampl * s * pvdz)
+
+    dvx = (cos(theta) * cos(phi) * vx.forward.dx +
+           cos(theta) * sin(phi) * vx.forward.dyc -
+           sin(theta) * vx.forward.dzc)
+    dvy = -sin(phi) * vy.forward.dxc + cos(phi) * vy.forward.dy
+    dvz = (sin(theta) * cos(phi) * vz.forward.dxc +
+           sin(theta) * sin(phi) * vz.forward.dyc +
+           cos(theta) * vz.forward.dz)
+    # u and v equations
+    pv_eq = Eq(v.forward, dampl * (v - s / m * (delta * (dvx + dvy) + dvz)))
+
+    ph_eq = Eq(u.forward, dampl * (u - s / m * (epsilon * (dvx + dvy) + delta * dvz)))
+
+    return [u_vx, u_vy, u_vz] + [pv_eq, ph_eq]
+
+
+def ForwardOperator(model, geometry, space_order=4,
                     save=False, kernel='centered', **kwargs):
     """
        Constructor method for the forward modelling operator in an acoustic media
@@ -369,57 +503,46 @@ def ForwardOperator(model, source, receiver, space_order=4,
        :param: time_order: Time discretization order
        :param: spc_order: Space discretization order
        """
-    dt = model.grid.time_dim.spacing
 
     m, epsilon, delta, theta, phi = (model.m, model.epsilon, model.delta,
                                      model.theta, model.phi)
+    dt = model.grid.time_dim.spacing
+    time_order = 1 if kernel == 'staggered' else 2
+    if kernel == 'staggered':
+        dims = model.space_dimensions
+        stagg_u = (-dims[-1])
+        stagg_v = (-dims[0], -dims[1]) if model.grid.dim == 3 else (-dims[0])
+    else:
+        stagg_u = stagg_v = None
 
     # Create symbols for forward wavefield, source and receivers
-    u = TimeFunction(name='u', grid=model.grid,
-                     save=source.nt if save else None,
-                     time_order=2, space_order=space_order)
-    v = TimeFunction(name='v', grid=model.grid,
-                     save=source.nt if save else None,
-                     time_order=2, space_order=space_order)
-    src = PointSource(name='src', grid=model.grid, time_range=source.time_range,
-                      npoint=source.npoint)
-    rec = Receiver(name='rec', grid=model.grid, time_range=receiver.time_range,
-                   npoint=receiver.npoint)
+    u = TimeFunction(name='u', grid=model.grid, staggered=stagg_u,
+                     save=geometry.nt if save else None,
+                     time_order=time_order, space_order=space_order)
+    v = TimeFunction(name='v', grid=model.grid, staggered=stagg_v,
+                     save=geometry.nt if save else None,
+                     time_order=time_order, space_order=space_order)
+    src = PointSource(name='src', grid=model.grid, time_range=geometry.time_axis,
+                      npoint=geometry.nsrc)
+    rec = Receiver(name='rec', grid=model.grid, time_range=geometry.time_axis,
+                   npoint=geometry.nrec)
 
-    # Tilt and azymuth setup
-    ang0 = cos(theta)
-    ang1 = sin(theta)
-    ang2 = 0
-    ang3 = 0
-    if len(model.shape) == 3:
-        ang2 = cos(phi)
-        ang3 = sin(phi)
-
+    # FD kernels of the PDE
     FD_kernel = kernels[(kernel, len(model.shape))]
-    H0, Hz = FD_kernel(u, v, ang0, ang1, ang2, ang3, space_order)
-
-    # Stencils
-    s = model.grid.stepping_dim.spacing
-
-    stencilp = s ** 2 / m * (epsilon * H0 + delta * Hz) - u.backward + 2 * u
-    stencilr = s ** 2 / m * (delta * H0 + Hz) - v.backward + 2 * v
-    first_stencil = Eq(u.forward, stencilp)
-    second_stencil = Eq(v.forward, stencilr)
-    stencils = [first_stencil, second_stencil]
+    stencils = FD_kernel(model, u, v, space_order)
 
     stencils += ABC(model, v).abc
     stencils += ABC(model, u).abc
 
     # Source and receivers
-    stencils += src.inject(field=u.forward, expr=src * dt**2 / (m * u.grid.volume_cell),
-                           offset=model.nbpml)
-    stencils += src.inject(field=v.forward, expr=src * dt**2 / (m * v.grid.volume_cell),
-                           offset=model.nbpml)
-    stencils += rec.interpolate(expr=u + v, offset=model.nbpml)
+    stencils += src.inject(field=u.forward, expr=src * dt**2 / m)
+    stencils += src.inject(field=v.forward, expr=src * dt**2 / m)
+    stencils += rec.interpolate(expr=u + v)
 
     # Substitute spacing terms to reduce flops
     return Operator(stencils, subs=model.spacing_map, name='ForwardTTI', **kwargs)
 
 
 kernels = {('shifted', 3): kernel_shifted_3d, ('shifted', 2): kernel_shifted_2d,
-           ('centered', 3): kernel_centered_3d, ('centered', 2): kernel_centered_2d}
+           ('centered', 3): kernel_centered_3d, ('centered', 2): kernel_centered_2d,
+           ('staggered', 3): kernel_staggered_3d, ('staggered', 2): kernel_staggered_2d}

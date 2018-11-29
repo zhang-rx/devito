@@ -1,11 +1,15 @@
 import cgen as c
 import pytest
-from conftest import skipif_yask
-
 from devito.ir.equations import DummyEq
 from devito.ir.iet import (Block, Expression, Callable, FindSections,
                            FindSymbols, IsPerfectIteration, Transformer,
-                           NestedTransformer, printAST)
+                           Conditional, printAST)
+from sympy import Mod, Eq
+from devito import configuration
+
+pytestmark = pytest.mark.skipif(configuration['backend'] == 'yask' or
+                                configuration['backend'] == 'ops',
+                                reason="testing is currently restricted")
 
 
 @pytest.fixture(scope="module")
@@ -54,8 +58,16 @@ def block3(exprs, iters):
                      iters[4](exprs[3])])
 
 
-@skipif_yask
-def test_printAST(block1, block2, block3):
+@pytest.fixture(scope="module")
+def block4(exprs, iters, dims):
+    # Non-perfect loop nest due to conditional
+    # for i
+    #   if i % 2 == 0
+    #   for j
+    return iters[0](Conditional(Eq(Mod(dims['i'], 2), 0), iters[1](exprs[0])))
+
+
+def test_printAST(block1, block2, block3, block4):
     str1 = printAST(block1)
     assert str1 in """
 <Iteration i::i::(0, 3, 1)::(0, 0)>
@@ -86,8 +98,15 @@ def test_printAST(block1, block2, block3):
     <Expression a[i] = 8.0*a[i] + 6.0/b[i]>
 """
 
+    str4 = printAST(block4)
+    assert str4 in """
+<Iteration i::i::(0, 3, 1)::(0, 0)>
+  <If Eq(Mod(i, 2), 0)>
+    <Iteration j::j::(0, 5, 1)::(0, 0)>
+      <Expression a[i] = a[i] + b[i] + 5.0>
+"""
 
-@skipif_yask
+
 def test_create_cgen_tree(block1, block2, block3):
     assert str(Callable('foo', block1, 'void', ()).ccode) == """\
 void foo()
@@ -143,7 +162,6 @@ void foo()
 }"""
 
 
-@skipif_yask
 def test_find_sections(exprs, block1, block2, block3):
     finder = FindSections()
 
@@ -164,8 +182,7 @@ def test_find_sections(exprs, block1, block2, block3):
     assert len(found[2]) == 1
 
 
-@skipif_yask
-def test_is_perfect_iteration(block1, block2, block3):
+def test_is_perfect_iteration(block1, block2, block3, block4):
     checker = IsPerfectIteration()
 
     assert checker.visit(block1) is True
@@ -181,8 +198,11 @@ def test_is_perfect_iteration(block1, block2, block3):
     assert checker.visit(block3.nodes[1]) is True
     assert checker.visit(block3.nodes[2]) is True
 
+    assert checker.visit(block4) is False
+    assert checker.visit(block4.nodes[0]) is False
+    assert checker.visit(block4.nodes[0].then_body) is True
 
-@skipif_yask
+
 def test_transformer_wrap(exprs, block1, block2, block3):
     """Basic transformer test that wraps an expression in comments"""
     line1 = '// This is the opening comment'
@@ -201,7 +221,6 @@ def test_transformer_wrap(exprs, block1, block2, block3):
         assert "a[i] = a[i] + b[i] + 5.0F;" in newcode
 
 
-@skipif_yask
 def test_transformer_replace(exprs, block1, block2, block3):
     """Basic transformer test that replaces an expression"""
     line1 = '// Replaced expression'
@@ -218,12 +237,12 @@ def test_transformer_replace(exprs, block1, block2, block3):
         assert "a[i0] = a[i0] + b[i0] + 5.0F;" not in newcode
 
 
-@skipif_yask
 def test_transformer_replace_function_body(block1, block2):
     """Create a Function and replace its body with another."""
     args = FindSymbols().visit(block1)
     f = Callable('foo', block1, 'void', args)
-    assert str(f.ccode) == """void foo(float *restrict a_vec, float *restrict b_vec)
+    assert str(f.ccode) == """void foo(float *restrict a_vec, float *restrict b_vec, \
+const int i_size)
 {
   for (int i = 0; i <= 3; i += 1)
   {
@@ -238,7 +257,8 @@ def test_transformer_replace_function_body(block1, block2):
 }"""
 
     f = Transformer({block1: block2}).visit(f)
-    assert str(f.ccode) == """void foo(float *restrict a_vec, float *restrict b_vec)
+    assert str(f.ccode) == """void foo(float *restrict a_vec, float *restrict b_vec, \
+const int i_size)
 {
   for (int i = 0; i <= 3; i += 1)
   {
@@ -254,7 +274,6 @@ def test_transformer_replace_function_body(block1, block2):
 }"""
 
 
-@skipif_yask
 def test_transformer_add_replace(exprs, block2, block3):
     """Basic transformer test that adds one expression and replaces another"""
     line1 = '// Replaced expression'
@@ -275,16 +294,15 @@ def test_transformer_add_replace(exprs, block2, block3):
         assert "a[i0] = a[i0] + b[i0] + 5.0F;" not in newcode
 
 
-@skipif_yask
 def test_nested_transformer(exprs, iters, block2):
-    """Unlike Transformer, based on BFS, a NestedTransformer applies transformations
-    performing a DFS. This test simultaneously replace an inner expression and an
-    Iteration sorrounding it."""
+    """When created with the kwarg ``nested=True``, a Transformer performs
+    nested replacements. This test simultaneously replace an inner expression
+    and an Iteration sorrounding it."""
     target_loop = block2.nodes[1]
     target_expr = target_loop.nodes[0].nodes[0]
     mapper = {target_loop: iters[3](target_loop.nodes[0]),
               target_expr: exprs[3]}
-    processed = NestedTransformer(mapper).visit(block2)
+    processed = Transformer(mapper, nested=True).visit(block2)
     assert printAST(processed) == """<Iteration i::i::(0, 3, 1)::(0, 0)>
   <Expression a[i] = a[i] + b[i] + 5.0>
   <Iteration s::s::(0, 4, 1)::(0, 0)>

@@ -1,3 +1,4 @@
+import ctypes
 import sys
 
 import numpy as np
@@ -5,7 +6,7 @@ import numpy as np
 from devito.logger import yask as log
 from devito.tools import as_tuple
 
-from devito.yask.utils import rawpointer
+from devito.yask.utils import namespace
 
 
 class Data(object):
@@ -62,7 +63,7 @@ class Data(object):
 
         offset = offset or tuple(0 for _ in dimensions)
         assert len(offset) == len(dimensions)
-        self._offset = [0 if i.is_Time else (self.get_first_rank_alloc_index(i.name)+j)
+        self._offset = [(self.get_first_rank_alloc_index(i.name)+j) if i.is_Space else 0
                         for i, j in zip(dimensions, offset)]
 
     def __getitem__(self, index):
@@ -204,11 +205,12 @@ class Data(object):
         Share self's storage with ``target``.
         """
         for i in self.dimensions:
-            if i.is_Time:
-                target.set_alloc_size(i.name, self.get_alloc_size(i.name))
-            else:
+            if i.is_Space:
                 target.set_left_halo_size(i.name, self.get_left_halo_size(i.name))
                 target.set_right_halo_size(i.name, self.get_right_halo_size(i.name))
+            else:
+                # time and misc dimensions
+                target.set_alloc_size(i.root.name, self.get_alloc_size(i.root.name))
         target.share_storage(self.grid)
 
     def __getattr__(self, name):
@@ -250,7 +252,7 @@ class Data(object):
 
     @property
     def rawpointer(self):
-        return rawpointer(self.grid)
+        return ctypes.cast(int(self.grid), namespace['type-grid'])
 
     def reset(self):
         """
@@ -258,7 +260,7 @@ class Data(object):
         """
         self[:] = 0.0
 
-    def view(self):
+    def view(self, *args):
         """
         View of the YASK grid in standard (i.e., Devito) row-major layout,
         returned as a :class:`numpy.ndarray`.
