@@ -89,13 +89,18 @@ def build_iterators(mapper):
 
 def build_intervals(stencil):
     """
-    Given a Stencil, return an iterable of Intervals, one
-    for each Dimension in the stencil.
+    Given a Stencil, return an iterable of Intervals, one for each Dimension
+    in the stencil.
     """
     mapper = {}
     for d, offs in stencil.items():
-        dim = d.parent if d.is_NonlinearDerived else d
-        mapper.setdefault(dim, set()).update(offs)
+        if d.is_Indirect:
+            mapper.setdefault(d, set()).update(offs)
+            mapper.setdefault(d.parent, {0})
+        elif d.is_NonlinearDerived:
+            mapper.setdefault(d.parent, set()).update(offs)
+        else:
+            mapper.setdefault(d, set()).update(offs)
     return [Interval(d, min(offs), max(offs)) for d, offs in mapper.items()]
 
 
