@@ -5,8 +5,9 @@ from sympy import And
 import pytest
 
 from conftest import skipif
-from devito import (ConditionalDimension, Grid, Function, TimeFunction, SparseFunction,  # noqa
-                    Eq, Operator, Constant, SubDimension, switchconfig)
+from devito import (ConditionalDimension, SubDimension, IndirectDimension,
+                    Grid, Function, TimeFunction, SparseFunction, Eq, Operator,
+                    Constant, dimensions, switchconfig)  # noqa
 from devito.ir.iet import Iteration, FindNodes, retrieve_iteration_tree
 
 
@@ -415,8 +416,9 @@ class TestSubDimension(object):
 @skipif(['yask', 'ops'])
 class TestConditionalDimension(object):
 
-    """A collection of tests to check the correct functioning of
-    :class:`ConditionalDimension`s."""
+    """
+    A collection of tests to check the correct functioning of ConditionalDimensions.
+    """
 
     def test_basic(self):
         nt = 19
@@ -680,3 +682,27 @@ class TestConditionalDimension(object):
         assert np.all(f.data[0, -1] == 0.)
         assert np.all(f.data[0, :, 0] == 0.)
         assert np.all(f.data[0, :, -1] == 0.)
+
+
+@skipif(['yask', 'ops'])
+class TestIndirectDimension(object):
+
+    """
+    A collection of tests to check the correct functioning of IndirectDimensions.
+    """
+
+    def test_indirect_byfunction(self):
+        grid = Grid(shape=(10,))
+        x = grid.dimensions[0]
+        nsubdomains = 10
+
+        b, s = dimensions('b s')
+        subdomains = Function(name='subdomains', dimensions=(b, s),
+                              shape=(2, nsubdomains))
+        ix = IndirectDimension.byfunction('ix', subdomains)
+
+        f = Function(name='f', dimensions=(x,), shape=(30,))
+        g = Function(name='g', dimensions=(x,), shape=(30,))
+
+        op = Operator(Eq(g.xreplace({x: ix}), f.xreplace({x: ix}) + 1))
+        from IPython import embed; embed()
