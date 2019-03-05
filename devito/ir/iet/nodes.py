@@ -404,19 +404,8 @@ class Iteration(Node):
     @property
     def symbolic_bounds(self):
         """A 2-tuple representing the symbolic bounds [min, max] of the Iteration."""
-        _min = self.limits[0]
-        _max = self.limits[1]
-        try:
-            _min = as_symbol(_min)
-        except TypeError:
-            # A symbolic expression
-            pass
-        try:
-            _max = as_symbol(_max)
-        except TypeError:
-            # A symbolic expression
-            pass
-        return (_min + as_symbol(self.offsets[0]), _max + as_symbol(self.offsets[1]))
+        return (self.limits[0] + as_symbol(self.offsets[0]),
+                self.limits[1] + as_symbol(self.offsets[1]))
 
     @property
     def symbolic_size(self):
@@ -459,7 +448,16 @@ class Iteration(Node):
     @property
     def functions(self):
         """All Functions appearing in the Iteration header."""
-        return ()
+        ret = []
+        for i in self.free_symbols:
+            try:
+                if i.function.is_DiscreteFunction:
+                    ret.append(i.function)
+            except AttributeError:
+                # E.g., i.function is None or there's no `is_DiscreteFunction`
+                # as .free_symbols may actually return SymPy.Symbol
+                pass
+        return tuple(ret)
 
     @property
     def free_symbols(self):
