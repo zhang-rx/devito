@@ -12,8 +12,8 @@ from devito.tools import ArgProvider, Pickable, dtype_to_cstr
 from devito.types.basic import AbstractSymbol, Scalar
 
 __all__ = ['Dimension', 'SpaceDimension', 'TimeDimension', 'DefaultDimension',
-           'SteppingDimension', 'SubDimension', 'ConditionalDimension', 'dimensions',
-           'ModuloDimension', 'IncrDimension']
+           'SteppingDimension', 'SubDimension', 'ConditionalDimension',
+           'dimensions', 'ModuloDimension', 'IncrDimension', 'IndirectDimension']
 
 
 class Dimension(AbstractSymbol, ArgProvider):
@@ -83,6 +83,7 @@ class Dimension(AbstractSymbol, ArgProvider):
     is_Stepping = False
     is_Modulo = False
     is_Incr = False
+    is_Indirect = False
 
     # Unlike other Symbols, Dimensions can only be integers
     dtype = np.int32
@@ -925,3 +926,65 @@ class IncrDimension(DerivedDimension):
 def dimensions(names):
     assert type(names) == str
     return tuple(Dimension(i) for i in names.split())
+
+
+class IndirectDimension(DerivedDimension):
+
+    """
+    Symbol defining a convex, parametric iteration sub-space derived from a
+    ``parent`` Dimension, implemented by the compiler generating a "for loop"
+    with indirectly-derived bounds.
+
+    Parameters
+    ----------
+    name : str
+        Name of the dimension.
+    parent : Dimension
+        The parent Dimension.
+    left : expr-like
+        Symbolic expression providing the parametric left (lower) bound of the
+        IndirectDimension.
+    right : expr-like
+        Symbolic expression providing the parametric right (upper) bound of the
+        IndirectDimension.
+
+    Examples
+    --------
+    TODO
+
+    The Operator generates the following for-loop (pseudocode)
+
+    .. code-block:: C
+
+        for (int i = f(...); i <= g(...); i += 1) {
+          ...
+        }
+    """
+
+    is_Indirect = True
+
+    def __new__(cls, name, parent, left, right):
+        return IndirectDimension.__xnew_cached_(cls, name, parent, left, right)
+
+    def __new_stage2__(cls, name, parent, left, right):
+        newobj = DerivedDimension.__xnew__(cls, name, parent)
+        newobj._interval = sympy.Interval(left, right)
+        return newobj
+
+    __xnew_cached_ = staticmethod(cacheit(__new_stage2__))
+
+    @classmethod
+    def byfunction(cls, name, function):
+        # TODO: assert the function has certain structural properties, eg.,
+        # the first dimension must be of size 2 to contain the left and right values
+        # while the second dimension must be indexed through `parent`
+        _, parent = function.dimensions
+        return cls(name, parent, left=function[0, parent], right=function[1, parent])
+
+    @property
+    def symbolic_min(self):
+        return self._interval.left
+
+    @property
+    def symbolic_max(self):
+        return self._interval.right
