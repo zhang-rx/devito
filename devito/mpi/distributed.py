@@ -1,19 +1,17 @@
-from collections import namedtuple
-from ctypes import Structure, c_int, c_void_p, sizeof
-from itertools import product
+from ctypes import c_int, c_void_p, sizeof
+from itertools import groupby, product
 from math import ceil
 from abc import ABC, abstractmethod
 import atexit
 
 from cached_property import cached_property
+import numpy as np
 from cgen import Struct, Value
 
-import numpy as np
-
-from devito.data import Decomposition
+from devito.data import LEFT, CENTER, RIGHT, Decomposition
 from devito.parameters import configuration
-from devito.types import LEFT, RIGHT, CompositeObject, Object
-from devito.tools import EnrichedTuple, as_tuple, is_integer
+from devito.tools import EnrichedTuple, as_tuple, ctypes_to_cstr, is_integer
+from devito.types import CompositeObject, Object
 
 
 # Do not prematurely initialize MPI
@@ -32,12 +30,14 @@ except ImportError:
         def Is_initialized(cls):
             return False
 
-        def _sizeof(comm):
+        def _sizeof(obj):
             return None
 
         @property
         def Comm(self):
             return None
+
+        Request = Comm
 
 
 __all__ = ['Distributor', 'SparseDistributor', 'MPI']
@@ -46,12 +46,12 @@ __all__ = ['Distributor', 'SparseDistributor', 'MPI']
 class AbstractDistributor(ABC):
 
     """
-    Decompose a set of :class:`Dimension`s over a set of MPI processes.
+    Decompose a set of Dimensions over a set of MPI processes.
 
-    .. note::
-
-        This is an abstract class, which simply defines the interface that
-        all subclasses are expected to implement.
+    Notes
+    -----
+    This is an abstract class, which simply defines the interface that
+    all subclasses are expected to implement.
     """
 
     def __init__(self, shape, dimensions):
@@ -94,8 +94,10 @@ class AbstractDistributor(ABC):
 
     @cached_property
     def glb_slices(self):
-        """The global indices owned by the calling MPI rank, as a mapper from
-        :class:`Dimension`s to slices."""
+        """
+        The global indices owned by the calling MPI rank, as a mapper from
+        Dimensions to slices.
+        """
         return {d: slice(min(i), max(i) + 1)
                 for d, i in zip(self.dimensions, self.glb_numb)}
 
@@ -111,17 +113,17 @@ class AbstractDistributor(ABC):
 
     @property
     def dimensions(self):
-        """The decomposed :class:`Dimension`s."""
+        """The decomposed Dimensions."""
         return self._dimensions
 
     @cached_property
     def decomposition(self):
-        """The :class:`Decomposition`s, one for each decomposed :class:`Dimension`."""
+        """The Decompositions, one for each decomposed Dimension."""
         return EnrichedTuple(*self._decomposition, getters=self.dimensions)
 
     @property
     def ndim(self):
-        """Number of decomposed :class:`Dimension`s"""
+        """Number of decomposed Dimensions"""
         return len(self._glb_shape)
 
     def glb_to_loc(self, dim, *args, strict=True):
@@ -130,7 +132,7 @@ class AbstractDistributor(ABC):
 
         Parameters
         ----------
-        dim : :class:`Dimension`
+        dim : Dimension
             The global index Dimension.
         *args
             There are several possibilities, documented in
@@ -150,11 +152,17 @@ class AbstractDistributor(ABC):
 class Distributor(AbstractDistributor):
 
     """
-    Decompose a set of :class:`Dimension`s over a set of MPI processes.
+    Decompose a set of Dimensions over a set of MPI processes.
 
-    :param shape: The global shape of the domain to be decomposed.
-    :param dimensions: The decomposed :class:`Dimension`s.
-    :param comm: An MPI communicator.
+    Parameters
+    ----------
+    shape : tuple of ints
+        The shape of the domain to be decomposed.
+    dimensions : tuple of Dimensions
+        The decomposed Dimensions.
+    comm : MPI communicator, optional
+        The set of processes over which the domain is distributed. Defaults to
+        MPI.COMM_WORLD.
     """
 
     def __init__(self, shape, dimensions, input_comm=None):
@@ -238,14 +246,16 @@ class Distributor(AbstractDistributor):
 
     @cached_property
     def all_coords(self):
-        """Return an iterable containing the coordinates of each MPI rank in
-        the decomposed domain. The iterable is order based on the MPI rank."""
+        """
+        The coordinates of each MPI rank in the decomposed domain, ordered
+        based on the MPI rank.
+        """
         ret = product(*[range(i) for i in self.topology])
         return tuple(sorted(ret, key=lambda i: self.comm.Get_cart_rank(i)))
 
     @cached_property
     def all_numb(self):
-        """Return an iterable containing the global numbering of all MPI ranks."""
+        """The global numbering of all MPI ranks."""
         ret = []
         for c in self.all_coords:
             glb_numb = [i[j] for i, j in zip(self.decomposition, c)]
@@ -254,7 +264,7 @@ class Distributor(AbstractDistributor):
 
     @cached_property
     def all_ranges(self):
-        """Return an iterable containing the global ranges of each MPI rank."""
+        """The global ranges of all MPI ranks."""
         ret = []
         for i in self.all_numb:
             ret.append(EnrichedTuple(*[range(min(j), max(j) + 1) for j in i],
@@ -263,8 +273,10 @@ class Distributor(AbstractDistributor):
 
     @cached_property
     def glb_pos_map(self):
-        """Return the mapper ``dimension -> side`` telling the position
-        of the calling rank in the global grid."""
+        """
+        A mapper ``Dimension -> DataSide`` providing the position of the calling
+        MPI rank in the decomposed domain.
+        """
         ret = {}
         for d, i, s in zip(self.dimensions, self.mycoords, self.topology):
             v = []
@@ -277,10 +289,13 @@ class Distributor(AbstractDistributor):
 
     def glb_to_rank(self, index):
         """
-        Return the rank owning a given global index.
+        The MPI rank owning a given global index.
 
-        :param index: A single domain index, or a list of domain indices. In
-                      the latter case, a list of corresponding ranks is returned.
+        Parameters
+        ----------
+        index : int or list of ints
+            The index, or list of indices, for which the owning MPI rank(s) is
+            retrieved.
         """
         if isinstance(index, (tuple, list)):
             if len(index) == 0:
@@ -303,47 +318,78 @@ class Distributor(AbstractDistributor):
         return tuple(ret) if len(indices) > 1 else ret[0]
 
     @property
-    def neighbours(self):
+    def neighborhood(self):
         """
-        Return the mapper ``proc -> side``; ``proc`` is the rank of a
-        neighboring process, while ``side`` tells whether ``proc`` is
-        logically at right (value=1) or left (value=-1) of ``self``.
+        A mapper ``M`` describing the calling MPI rank's neighborhood in the
+        decomposed grid. Let
+
+            * ``d`` be a Dimension -- ``d0, d1, ..., dn`` are the decomposed
+              Dimensions.
+            * ``s`` be a DataSide -- possible values are ``LEFT, CENTER, RIGHT``,
+            * ``p`` be the rank of a neighbour MPI process.
+
+        Then ``M`` can be indexed in two ways:
+
+            * ``M[d] -> (s -> p)``; that is, ``M[d]`` returns a further mapper
+              (from DataSide to MPI rank) from which the two adjacent processes
+              along ``d`` can be retrieved.
+            * ``M[(s0, s1, ..., sn)] -> p``, where ``s0`` is the DataSide along
+              ``d0``, ``s1`` the DataSide along ``d1``, and so on. This can be
+              useful to retrieve the diagonal neighbours (e.g., ``M[(LEFT, LEFT)]``
+              gives the top-left neighbour in a 2D grid).
         """
-        shifts = {d: self._comm.Shift(i, 1) for i, d in enumerate(self.dimensions)}
+        # Set up horizontal neighbours
+        shifts = {d: self.comm.Shift(i, 1) for i, d in enumerate(self.dimensions)}
         ret = {}
         for d, (src, dest) in shifts.items():
             ret[d] = {}
             ret[d][LEFT] = src
             ret[d][RIGHT] = dest
+
+        # Set up diagonal neighbours
+        for i in product([LEFT, CENTER, RIGHT], repeat=self.ndim):
+            neighbor = [c + s.val for c, s in zip(self.mycoords, i)]
+            try:
+                ret[i] = self.comm.Get_cart_rank(neighbor)
+            except:
+                # Fallback for MPI ranks at the grid boundary
+                ret[i] = MPI.PROC_NULL
+
         return ret
 
     @cached_property
-    def _C_comm(self):
-        """An :class:`Object` wrapping an MPI communicator."""
+    def _obj_comm(self):
+        """An Object representing the MPI communicator."""
         return MPICommObject(self.comm)
 
     @cached_property
-    def _C_neighbours(self):
-        """A :class:`ctypes.Struct` to access the neighborhood of a given rank."""
-        entries = list(product(self.dimensions, [LEFT, RIGHT]))
-        fields = [('%s%s' % (d, i), c_int) for d, i in entries]
-        obj = CompositeObject('nb', 'neighbours', Structure, fields)
-        for d, i in entries:
-            setattr(obj.value._obj, '%s%s' % (d, i), self.neighbours[d][i])
-        cdef = Struct('neighbours', [Value('int', i) for i, _ in fields])
-        CNeighbours = namedtuple('CNeighbours', 'ctype cdef obj')
-        return CNeighbours(obj.dtype, cdef, obj)
+    def _obj_neighborhood(self):
+        """
+        A CompositeObject describing the calling MPI rank's neighborhood
+        in the decomposed grid.
+        """
+        entries = list(product([LEFT, CENTER, RIGHT], repeat=self.ndim))
+        fields = [''.join(j.name[0] for j in i) for i in entries]
+        obj = MPINeighborhood(fields)
+        for name, i in zip(fields, entries):
+            setattr(obj.value._obj, name, self.neighborhood[i])
+        return obj
 
 
 class SparseDistributor(AbstractDistributor):
 
     """
-    Decompose a :class:`Dimension` representing a set of data values
-    arbitrarily spread over a cartesian grid.
+    Decompose a Dimension defining a set of sparse data values arbitrarily
+    spread within a cartesian grid.
 
-    :param npoint: The number of sparse data values.
-    :param dimension: The decomposed :class:`Dimension`.
-    :param distributor: The :class:`Distributor` the SparseDistributor depends on.
+    Parameters
+    ----------
+    npoint : int
+        The number of sparse data values.
+    dimensions : tuple of Dimensions
+        The decomposed Dimensions.
+    distributor : Distributor
+        The domain decomposition the SparseDistributor depends on.
     """
 
     def __init__(self, npoint, dimension, distributor):
@@ -424,6 +470,34 @@ class MPICommObject(Object):
 
     # Pickling support
     _pickle_args = []
+
+
+class MPINeighborhood(CompositeObject):
+
+    def __init__(self, fields):
+        super(MPINeighborhood, self).__init__('nb', 'neighborhood',
+                                              [(i, c_int) for i in fields])
+
+    @cached_property
+    def _C_typedecl(self):
+        # Overriding for better code readability
+        #
+        # Struct neighborhood                 Struct neighborhood
+        # {                                   {
+        #   int ll;                             int ll, lc, lr;
+        #   int lc;                 VS          ...
+        #   int lr;                             ...
+        #   ...                                 ...
+        # }                                   }
+        #
+        # With this override, we generate the one on the right
+        groups = [list(g) for k, g in groupby(self.pfields, key=lambda x: x[0][0])]
+        groups = [(j[0], i) for i, j in [zip(*g) for g in groups]]
+        return Struct(self.pname, [Value(ctypes_to_cstr(i), ', '.join(j))
+                                   for i, j in groups])
+
+    # Pickling support
+    _pickle_args = ['fields']
 
 
 def compute_dims(nprocs, ndim):

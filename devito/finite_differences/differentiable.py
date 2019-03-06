@@ -24,6 +24,10 @@ class Differentiable(sympy.Expr):
     _state = ('space_order', 'time_order', 'indices')
 
     @cached_property
+    def _functions(self):
+        return frozenset().union(*[i._functions for i in self._args_diff])
+
+    @cached_property
     def _args_diff(self):
         ret = [i for i in self.args if isinstance(i, Differentiable)]
         ret.extend([i.function for i in self.args if i.is_Indexed])
@@ -47,8 +51,20 @@ class Differentiable(sympy.Expr):
                                             for i in self._args_diff)))
 
     @cached_property
+    def is_Staggered(self):
+        return any([getattr(i, 'is_Staggered', False) for i in self._args_diff])
+
+    @cached_property
     def _fd(self):
         return dict(ChainMap(*[getattr(i, '_fd', {}) for i in self._args_diff]))
+
+    @cached_property
+    def _symbolic_functions(self):
+        return frozenset([i for i in self._functions if i.coefficients == 'symbolic'])
+
+    @cached_property
+    def _uses_symbolic_coefficients(self):
+        return bool(self._symbolic_functions)
 
     def __hash__(self):
         return super(Differentiable, self).__hash__()
@@ -63,7 +79,7 @@ class Differentiable(sympy.Expr):
         """
         if name in self._fd:
             return self._fd[name][0](self)
-        raise AttributeError
+        raise AttributeError("%r object has no attribute %r" % (self.__class__, name))
 
     # Override SymPy arithmetic operators
     def __add__(self, other):
@@ -135,7 +151,7 @@ class Differentiable(sympy.Expr):
         """
         space_dims = [d for d in self.indices if d.is_Space]
         derivs = tuple('d%s2' % d.name for d in space_dims)
-        return sum([getattr(self, d) for d in derivs])
+        return Add(*[getattr(self, d) for d in derivs])
 
     def laplace2(self, weight=1):
         """
@@ -148,7 +164,16 @@ class Differentiable(sympy.Expr):
 
 
 class Add(sympy.Add, Differentiable):
-    pass
+
+    def __new__(cls, *args, **kwargs):
+        obj = sympy.Add.__new__(cls, *args, **kwargs)
+
+        # `(f + f)` is evaluated as `2*f`, with `*` being a sympy.Mul.
+        # Here we make sure to return our own Mul.
+        if obj.is_Mul:
+            obj = Mul(*obj.args)
+
+        return obj
 
 
 class Mul(sympy.Mul, Differentiable):
@@ -160,6 +185,11 @@ class Mul(sympy.Mul, Differentiable):
         # Here we make sure to return our own Add.
         if obj.is_Add:
             obj = Add(*obj.args)
+
+        # `(f * f)` is evaluated as `f**2`, with `**` being a sympy.Pow.
+        # Here we make sure to return our own Pow.
+        if obj.is_Pow:
+            obj = Pow(*obj.args)
 
         return obj
 

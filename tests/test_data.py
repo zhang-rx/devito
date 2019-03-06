@@ -4,8 +4,7 @@ import numpy as np
 from conftest import skipif
 from devito import (Grid, Function, TimeFunction, SparseTimeFunction, Dimension, # noqa
                     Eq, Operator, ALLOC_GUARD, ALLOC_FLAT)
-from devito.data import Decomposition
-from devito.types import LEFT, RIGHT
+from devito.data import LEFT, RIGHT, Decomposition
 
 pytestmark = skipif('ops')
 
@@ -13,9 +12,7 @@ pytestmark = skipif('ops')
 class TestDataBasic(object):
 
     def test_simple_indexing(self):
-        """
-        Tests packing/unpacking data in :class:`Function` objects.
-        """
+        """Test data packing/unpacking via basic indexing."""
         grid = Grid(shape=(16, 16, 16))
         u = Function(name='yu3D', grid=grid, space_order=0)
 
@@ -52,10 +49,7 @@ class TestDataBasic(object):
         assert np.all(u.data[4, :, 4] == block)
 
     def test_advanced_indexing(self):
-        """
-        Tests packing/unpacking data in :class:`Function` objects with more advanced
-        access functions.
-        """
+        """Test data packing/unpacking via advanced indexing."""
         grid = Grid(shape=(4, 4, 4))
         u = TimeFunction(name='yu4D', grid=grid, space_order=0, time_order=1)
         u.data[:] = 0.
@@ -70,10 +64,7 @@ class TestDataBasic(object):
         assert np.all(u.data[1, :, :, -1] == 0.)
 
     def test_halo_indexing(self):
-        """
-        Tests packing/unpacking data in :class:`Function` objects when some halo
-        region is present.
-        """
+        """Test data packing/unpacking in presence of a halo region."""
         domain_shape = (16, 16, 16)
         grid = Grid(shape=domain_shape)
         u = Function(name='yu3D', grid=grid, space_order=2)
@@ -94,10 +85,40 @@ class TestDataBasic(object):
         assert u.data[-1, -1, -1] == 0.
         assert u.data_with_halo[-1, -1, -1] == 3.
 
+    def test_broadcasting(self):
+        """
+        Test Data broadcasting, expected to behave as NumPy broadcasting.
+
+        Notes
+        -----
+        Refer to https://docs.scipy.org/doc/numpy-1.15.0/user/basics.broadcasting.html
+        for more info about NumPy broadcasting rules.
+        """
+        grid = Grid(shape=(4, 4, 4))
+        u = Function(name='yu3D', grid=grid)
+        u.data[:] = 2.
+
+        # Assign from array with lower-dimensional shape
+        v = np.ones(shape=(4, 4), dtype=u.dtype)
+        u.data[:] = v
+        assert np.all(u.data == 1.)
+
+        # Assign from array with higher-dimensional shape causes a ValueError exception
+        v = np.zeros(shape=(4, 4, 4, 4), dtype=u.dtype)
+        try:
+            u.data[:] = v
+        except ValueError:
+            assert True
+        except:
+            assert False
+
+        # Assign from array having shape with some 1-valued entries
+        v = np.zeros(shape=(4, 1, 4), dtype=u.dtype)
+        u.data[:] = v
+        assert np.all(u.data == 0.)
+
     def test_arithmetic(self):
-        """
-        Tests arithmetic operations between :class:`Data` objects and values.
-        """
+        """Test arithmetic operations involving Data objects."""
         grid = Grid(shape=(16, 16, 16))
         u = Function(name='yu3D', grid=grid, space_order=0)
         u.data[:] = 1
@@ -125,9 +146,7 @@ class TestDataBasic(object):
 
     @skipif('yask')
     def test_illegal_indexing(self):
-        """
-        Tests that indexing into illegal entries throws an exception.
-        """
+        """Tests that indexing into illegal entries throws an exception."""
         nt = 5
         grid = Grid(shape=(4, 4, 4))
         u = Function(name='u', grid=grid)
@@ -145,9 +164,7 @@ class TestDataBasic(object):
             pass
 
     def test_logic_indexing(self):
-        """
-        Tests logic indexing for stepping dimensions.
-        """
+        """Test logic indexing along stepping dimensions."""
         grid = Grid(shape=(4, 4, 4))
         v_mod = TimeFunction(name='v_mod', grid=grid)
 
@@ -161,41 +178,63 @@ class TestDataBasic(object):
         assert np.all(v_mod.data[-1] == v_mod.data[1])
         assert np.all(v_mod.data[-2] == v_mod.data[0])
 
-    def test_domain_vs_halo(self):
+    def test_data_regions_metadata(self):
         """
-        Tests access to domain and halo data.
+        Test correctness of metadata describing size and offset of the various
+        data regions, such as DOMAIN, HALO, etc.
         """
         grid = Grid(shape=(4, 4, 4))
 
-        # Without padding
+        # Without halo and without padding
         u0 = Function(name='u0', grid=grid, space_order=0)
-        u2 = Function(name='u2', grid=grid, space_order=2)
 
         assert u0.shape == u0._shape_with_inhalo == u0.shape_allocated
         assert u0.shape_with_halo == u0._shape_with_inhalo  # W/o MPI, these two coincide
-        assert len(u2.shape) == len(u2._extent_halo.left)
-        assert tuple(i + j*2 for i, j in zip(u2.shape, u2._extent_halo.left)) ==\
-            u2.shape_with_halo
+        assert u0._size_halo == u0._size_owned == u0._size_padding ==\
+            ((0, 0), (0, 0), (0, 0))
+        assert u0._offset_domain == (0, 0, 0)
+        assert u0._offset_halo == u0._offset_owned == ((0, 4), (0, 4), (0, 4))
 
-        assert all(i == (0, 0) for i in u0._offset_domain)
-        assert all(i == 0 for i in u0._offset_domain.left)
-        assert all(i == 0 for i in u0._offset_domain.right)
+        # With halo but without padding
+        u1 = Function(name='u1', grid=grid, space_order=2)
+        assert len(u1.shape) == len(u1._size_halo.left)
+        assert u1._size_halo == u1._size_owned == ((2, 2), (2, 2), (2, 2))
+        assert u1._offset_domain == (2, 2, 2)
+        assert u1._offset_halo == ((0, 6), (0, 6), (0, 6))
+        assert u1._offset_owned == ((2, 4), (2, 4), (2, 4))
+        assert tuple(i + j*2 for i, j in zip(u1.shape, u1._size_halo.left)) ==\
+            u1.shape_with_halo
 
-        assert all(i == (2, 2) for i in u2._offset_domain)
-        assert all(i == 2 for i in u2._offset_domain.left)
-        assert all(i == 2 for i in u2._offset_domain.right)
+        # Without halo but with padding
+        u2 = Function(name='u2', grid=grid, space_order=2,
+                      padding=((1, 1), (3, 3), (4, 4)))
+        assert len(u2.shape_allocated) == len(u1._size_padding.left)
+        assert tuple(i + j + k for i, (j, k) in zip(u2.shape_with_halo, u2._padding)) ==\
+            u2.shape_allocated
+        assert u2._halo == ((2, 2), (2, 2), (2, 2))
+        assert u2._size_padding == ((1, 1), (3, 3), (4, 4))
+        assert u2._size_padding.left == u2._size_padding.right == (1, 3, 4)
+        assert u2._size_nodomain == ((3, 3), (5, 5), (6, 6))
+        assert u2._size_nodomain.left == u2._size_nodomain.right == (3, 5, 6)
+        assert u2._size_nopad == (8, 8, 8)
+        assert u2._offset_domain == (3, 5, 6)
+        assert u2._offset_halo == ((1, 7), (3, 9), (4, 10))
+        assert u2._offset_halo.left == (1, 3, 4)
+        assert u2._offset_halo.right == (7, 9, 10)
+        assert u2._offset_owned == ((3, 5), (5, 7), (6, 8))
 
-        # With some random padding
-        v = Function(name='v', grid=grid, space_order=2, padding=(1, 3, 4))
-        assert len(v.shape_allocated) == len(u2._extent_padding.left)
-        assert tuple(i + j + k for i, (j, k) in zip(v.shape_with_halo, v._padding)) ==\
-            v.shape_allocated
-
-        assert all(i == (2, 2) for i in v._halo)
-        assert v._offset_domain == ((3, 3), (5, 5), (6, 6))
-        assert v._offset_domain.left == v._offset_domain.right == (3, 5, 6)
-        assert v._extent_padding == ((1, 1), (3, 3), (4, 4))
-        assert v._extent_padding.left == v._extent_padding.right == (1, 3, 4)
+        # With halo and with padding
+        u3 = Function(name='u3', grid=grid, space_order=(2, 1, 4),
+                      padding=((1, 1), (2, 2), (3, 3)))
+        assert u3._size_halo == ((1, 4), (1, 4), (1, 4))
+        assert u3._size_owned == ((4, 1), (4, 1), (4, 1))
+        assert u3._size_nodomain == ((2, 5), (3, 6), (4, 7))
+        assert u3._size_nodomain.left == (2, 3, 4)
+        assert u3._size_nodomain.right == (5, 6, 7)
+        assert u3._size_nopad == (9, 9, 9)
+        assert u3._offset_domain == (2, 3, 4)
+        assert u3._offset_halo == ((1, 6), (2, 7), (3, 8))
+        assert u3._offset_owned == ((2, 5), (3, 6), (4, 7))
 
     def test_indexing_into_sparse(self):
         """
@@ -212,9 +251,10 @@ class TestDataBasic(object):
 class TestDecomposition(object):
 
     """
-    .. note::
-
-        If these tests don't work, definitely TestDataDistributed won't behave
+    Notes
+    -----
+    If these tests don't work, there is no chance that the tests in TestDataDistributed
+    will pass.
     """
 
     def test_convert_index(self):
@@ -331,7 +371,7 @@ class TestDataDistributed(object):
     Test Data indexing and manipulation when distributed over a set of MPI processes.
     """
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_localviews(self):
         grid = Grid(shape=(4, 4))
         x, y = grid.dimensions
@@ -359,7 +399,7 @@ class TestDataDistributed(object):
             assert np.all(u.data_ro_with_halo._local[:2, :2] == myrank)
             assert np.all(u.data_ro_with_halo._local[2] == 0.)
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_trivial_insertion(self):
         grid = Grid(shape=(4, 4))
         u = Function(name='u', grid=grid, space_order=0)
@@ -375,7 +415,7 @@ class TestDataDistributed(object):
         assert np.all(v.data_with_halo[:] == 1.)
         assert np.all(v.data_with_halo._local == 1.)
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_indexing(self):
         grid = Grid(shape=(4, 4))
         x, y = grid.dimensions
@@ -406,7 +446,7 @@ class TestDataDistributed(object):
             assert np.all(u.data[2] == [myrank, myrank])
             assert np.all(u.data[:, 2] == [myrank, myrank])
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_slicing(self):
         grid = Grid(shape=(4, 4))
         x, y = grid.dimensions
@@ -433,7 +473,7 @@ class TestDataDistributed(object):
             assert np.all(u.data[2:, 2:] == myrank)
             assert u.data[:2, 2:].size == u.data[2:, :2].size == u.data[:2, :2].size == 0
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_indexing_in_views(self):
         grid = Grid(shape=(4, 4))
         x, y = grid.dimensions
@@ -497,7 +537,7 @@ class TestDataDistributed(object):
             assert np.all(view2[:] == myrank)
             assert view2.size == 0
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_from_replicated_to_distributed(self):
         shape = (4, 4)
         grid = Grid(shape=shape)
@@ -546,7 +586,7 @@ class TestDataDistributed(object):
         except:
             assert False
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_misc_setup(self):
         """Test setup of Functions with mixed distributed/replicated Dimensions."""
         grid = Grid(shape=(4, 4))
@@ -587,7 +627,7 @@ class TestDataDistributed(object):
             # Too few entries for `shape` (two expected, for `y` and `dy`)
             assert True
 
-    @pytest.mark.parallel(nprocs=4)
+    @pytest.mark.parallel(mode=4)
     def test_misc_data(self):
         """
         Test data insertion/indexing for Functions with mixed

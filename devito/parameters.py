@@ -113,6 +113,7 @@ env_vars_mapper = {
     'DEVITO_PLATFORM': 'platform',
     'DEVITO_PROFILING': 'profiling',
     'DEVITO_BACKEND': 'backend',
+    'DEVITO_CODEGEN': 'codegen',
     'DEVITO_DEVELOP': 'develop-mode',
     'DEVITO_DSE': 'dse',
     'DEVITO_DLE': 'dle',
@@ -123,6 +124,7 @@ env_vars_mapper = {
     'DEVITO_LOGGING': 'log-level',
     'DEVITO_FIRST_TOUCH': 'first-touch',
     'DEVITO_DEBUG_COMPILER': 'debug-compiler',
+    'DEVITO_JIT_BACKDOOR': 'jit-backdoor',
     'DEVITO_IGNORE_UNKNOWN_PARAMS': 'ignore-unknowns'
 }
 

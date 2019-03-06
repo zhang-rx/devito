@@ -82,11 +82,11 @@ class TestOperatorSimple(object):
         assert np.all(u.data[1] == 1.)
         # Check that the halo planes are still 0
         assert all(np.all(u.data_with_halo[1, i, :, :] == 0)
-                   for i in range(u._extent_halo.left[1]))
+                   for i in range(u._size_halo.left[1]))
         assert all(np.all(u.data_with_halo[1, :, i, :] == 0)
-                   for i in range(u._extent_halo.left[2]))
+                   for i in range(u._size_halo.left[2]))
         assert all(np.all(u.data_with_halo[1, :, :, i] == 0)
-                   for i in range(u._extent_halo.left[3]))
+                   for i in range(u._size_halo.left[3]))
 
     def test_increasing_multi_steps(self):
         """
@@ -126,11 +126,11 @@ class TestOperatorSimple(object):
         assert np.all(v.data[1] == 6.)
         # Check that the halo planes are untouched
         assert all(np.all(v.data_with_halo[1, i, :, :] == 1)
-                   for i in range(v._extent_halo.left[1]))
+                   for i in range(v._size_halo.left[1]))
         assert all(np.all(v.data_with_halo[1, :, i, :] == 1)
-                   for i in range(v._extent_halo.left[2]))
+                   for i in range(v._size_halo.left[2]))
         assert all(np.all(v.data_with_halo[1, :, :, i] == 1)
-                   for i in range(v._extent_halo.left[3]))
+                   for i in range(v._size_halo.left[3]))
 
     def test_mixed_space_order(self):
         """
@@ -527,6 +527,8 @@ class TestIsotropicAcoustic(object):
 
         op.apply(u=self.u, m=self.m, damp=self.damp, time=10, dt=dt)
 
+        assert np.linalg.norm(self.u.data[:]) == 0.0
+
     def test_acoustic_w_src_wo_rec(self):
         """
         Test that the acoustic wave equation runs without crashing in absence
@@ -542,7 +544,6 @@ class TestIsotropicAcoustic(object):
         op.apply(u=self.u, m=self.m, damp=self.damp, src=self.src, dt=dt)
 
         exp_u = 154.05
-
         assert np.isclose(np.linalg.norm(self.u.data[:]), exp_u, atol=exp_u*1.e-2)
 
     def test_acoustic_w_src_w_rec(self):

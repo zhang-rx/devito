@@ -379,10 +379,10 @@ def initialize_damp(damp, nbpml, spacing, mask=False):
             all_ind = [slice(0, d) for d in data.shape]
             # Left slice for dampening for dimension i
             all_ind[i] = slice(j, j+1)
-            data[all_ind] += val/spacing[i]
+            data[tuple(all_ind)] += val/spacing[i]
             # right slice for dampening for dimension i
             all_ind[i] = slice(data.shape[i]-j, data.shape[i]-j+1)
-            data[all_ind] += val/spacing[i]
+            data[tuple(all_ind)] += val/spacing[i]
 
     initialize_function(damp, data, 0)
 
@@ -398,7 +398,7 @@ def initialize_function(function, data, nbpml, pad_mode='edge'):
     :param pad_mode: A string or a suitable padding function as explained in
                      :func:`numpy.pad`.
     """
-    pad_widths = [(nbpml + i.left, nbpml + i.right) for i in function._offset_domain]
+    pad_widths = [(nbpml + i.left, nbpml + i.right) for i in function._size_halo]
     data = np.pad(data, pad_widths, pad_mode)
     function.data_with_halo[:] = data
 
@@ -420,7 +420,7 @@ class GenericModel(object):
     General model class with common properties
     """
     def __init__(self, origin, spacing, shape, space_order, nbpml=20,
-                 dtype=np.float32):
+                 dtype=np.float32, subdomains=()):
         self.shape = shape
         self.nbpml = int(nbpml)
         self.origin = tuple([dtype(o) for o in origin])
@@ -429,11 +429,12 @@ class GenericModel(object):
         # at the correct index
         origin_pml = tuple([dtype(o - s*nbpml) for o, s in zip(origin, spacing)])
         phydomain = PhysicalDomain(self.nbpml)
+        subdomains = subdomains + (phydomain, )
         shape_pml = np.array(shape) + 2 * self.nbpml
         # Physical extent is calculated per cell, so shape - 1
         extent = tuple(np.array(spacing) * (shape_pml - 1))
         self.grid = Grid(extent=extent, shape=shape_pml, origin=origin_pml, dtype=dtype,
-                         subdomains=phydomain)
+                         subdomains=subdomains)
 
     def physical_params(self, **kwargs):
         """
@@ -507,15 +508,9 @@ class Model(GenericModel):
     """
     def __init__(self, origin, spacing, shape, space_order, vp, nbpml=20,
                  dtype=np.float32, epsilon=None, delta=None, theta=None, phi=None,
-                 **kwargs):
-        super(Model, self).__init__(origin, spacing, shape, space_order, nbpml, dtype)
-
-        # Are we provided with an existing grid?
-        grid = kwargs.get('grid')
-        if grid is not None:
-            assert self.grid.extent == grid.extent
-            assert self.grid.shape == grid.shape
-            self.grid = grid
+                 subdomains=(), **kwargs):
+        super(Model, self).__init__(origin, spacing, shape, space_order, nbpml, dtype,
+                                    subdomains)
 
         # Create square slowness of the wave as symbol `m`
         if isinstance(vp, np.ndarray):

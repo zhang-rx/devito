@@ -8,14 +8,13 @@ import cpuinfo
 from devito.base import *  # noqa
 from devito.builtins import *  # noqa
 from devito.data.allocators import *  # noqa
-from devito.dimension import *  # noqa
 from devito.equation import *  # noqa
-from devito.grid import *  # noqa
 from devito.finite_differences import *  # noqa
-from devito.function import Buffer, NODE, CELL  # noqa
 from devito.logger import error, warning, info, set_log_level  # noqa
 from devito.parameters import *  # noqa
 from devito.tools import *  # noqa
+from devito.types import NODE, CELL, Buffer, SubDomain  # noqa
+from devito.types.dimension import *  # noqa
 
 from devito.compiler import compiler_registry
 from devito.backends import backends_registry, init_backend
@@ -30,21 +29,40 @@ configuration.add('compiler', 'custom', list(compiler_registry),
                   callback=lambda i: compiler_registry[i]())
 configuration.add('backend', 'core', list(backends_registry), callback=init_backend)
 
-# Should Devito run a first-touch Operator upon allocating data?
+# Should Devito run a first-touch Operator upon data allocation?
 configuration.add('first-touch', 0, [0, 1], lambda i: bool(i), False)
 
 # Should Devito ignore any unknown runtime arguments supplied to Operator.apply(),
 # or rather raise an exception (the default behaviour)?
 configuration.add('ignore-unknowns', 0, [0, 1], lambda i: bool(i), False)
 
+# By default, the Devito compiler generates parameters, rather than numbers, for
+# things such as array casts, loop bounds, etc. This maximises Operator reusability,
+# as the same Operator can be applied to Functions that only different in the shape.
+# It is also the only viable way when using MPI. One can change this behaviour
+# (e.g., for educational purposes) by playing with the `codegen` configuration knob
+configuration.add('codegen', 'parametric', ['parametric', 'explicit'])
+
+# Escape hatch for custom kernels. The typical use case is as follows: one lets
+# Devito generate code for an Operator; then, once the session is over, the
+# generated file is manually modified (e.g., for debugging or for performance
+# experimentation); finally, when re-running the same program, Devito won't
+# overwrite the user-modified files (thus entirely bypassing code generation),
+# and will instead use the custom kernel
+configuration.add('jit-backdoor', 0, [0, 1], lambda i: bool(i), False)
+
+# (Undocumented) escape hatch for cross-compilation
+configuration.add('cross-compile', None)
+
 # Execution mode setup
 def _reinit_compiler(val):  # noqa
     # Force re-build the compiler
     configuration['compiler'].__init__(suffix=configuration['compiler'].suffix,
                                        mpi=configuration['mpi'])
-    return bool(val)
+    return bool(val) if isinstance(val, int) else val
 configuration.add('openmp', 0, [0, 1], callback=_reinit_compiler)  # noqa
-configuration.add('mpi', 0, [0, 1], callback=_reinit_compiler)
+configuration.add('mpi', 0, [0, 1, 'basic', 'diag', 'overlap'],
+                  callback=_reinit_compiler)
 
 # Autotuning setup
 AT_LEVELs = ['off', 'basic', 'aggressive']
@@ -73,9 +91,6 @@ configuration.add('isa', 'cpp', ISAs)
 # Set the CPU architecture (only codename)
 PLATFORMs = ['intel64', 'snb', 'ivb', 'hsw', 'bdw', 'skx', 'knl']
 configuration.add('platform', 'intel64', PLATFORMs)
-
-# (Undocumented) escape hatch for cross-compilation
-configuration.add('cross-compile', None)
 
 
 def infer_cpu():
@@ -141,15 +156,15 @@ clear_cache = CacheManager().clear  # noqa
 
 # Helper functions to switch on/off optimisation levels
 def mode_develop():
-    """Run all future :class:`Operator`s in develop mode. This is the default
-    configuration for Devito."""
+    """Run all future Operators in develop mode. This is the default mode."""
     configuration['develop-mode'] = True
 
 
 def mode_performance():
-    """Run all future :class:`Operator`s in performance mode. The performance
-    mode will also try to allocate any future :class:`TensorFunction` with
-    a suitable NUMA strategy."""
+    """
+    Run all future Operators in performance mode. The performance mode
+    also employs suitable NUMA strategies for memory allocation.
+    """
     configuration['develop-mode'] = False
     configuration['autotuning'] = ['aggressive',
                                    at_default_mode[configuration['backend']]]

@@ -3,12 +3,11 @@ from itertools import islice
 
 from cached_property import cached_property
 
-from devito.dimension import Dimension
 from devito.ir.equations import ClusterizedEq
 from devito.symbolics import (as_symbol, retrieve_indexed, retrieve_terminals,
                               q_indirect, q_timedimension)
 from devito.tools import DefaultOrderedDict, flatten, filter_ordered
-from devito.types import Symbol
+from devito.types import Dimension, Symbol
 
 __all__ = ['FlowGraph']
 
@@ -16,10 +15,10 @@ __all__ = ['FlowGraph']
 class Node(ClusterizedEq):
 
     """
-    A special :class:`ClusterizedEq` which keeps track of: ::
+    A special ClusterizedEq which keeps track of: ::
 
-        - :class:`sympy.Eq` writing to ``self``
-        - :class:`sympy.Eq` reading from ``self``
+        - Equations writing to ``self``
+        - Equations reading from ``self``
     """
 
     _state = ClusterizedEq._state + ('reads', 'readby')
@@ -51,8 +50,8 @@ class Node(ClusterizedEq):
 class FlowGraph(OrderedDict):
 
     """
-    A FlowGraph represents an ordered sequence of operations. Operations,
-    of type :class:`Node`, are the nodes of the graph. An edge from ``n0`` to
+    A FlowGraph represents an ordered sequence of operations. The operations,
+    objects of type Node, are the nodes of the graph. An edge from ``n0`` to
     ``n1`` indicates that ``n1`` reads from ``n0``. For example, the sequence: ::
 
         temp0 = a*b
@@ -185,7 +184,7 @@ class FlowGraph(OrderedDict):
                 elif isinstance(i, Dimension):
                     # Go on with the search, as /i/ is not a time dimension
                     pass
-                elif not i.base.function.is_TensorFunction:
+                elif not i.function.is_DiscreteFunction:
                     # It didn't come from the outside and it's not in self, so
                     # cannot determine if time-invariant; assume time-varying
                     return False
@@ -215,7 +214,7 @@ class FlowGraph(OrderedDict):
         ``key.readby``, in program order.
 
         Examples
-        ========
+        --------
         Given the following sequence of operations: ::
 
             t1 = ...
@@ -226,7 +225,7 @@ class FlowGraph(OrderedDict):
             t2 = ...
 
         Assuming ``key == v`` and ``readby is False`` (as by default), return
-        the following list of :class:`Node` objects: ::
+        the following list of Node objects: ::
 
             [t1, t0, u[i, j], u[3, j]]
 
@@ -263,7 +262,7 @@ class FlowGraph(OrderedDict):
         Return all symbols appearing in self for which a node is not available.
         """
         known = {v.function for v in self.values()}
-        reads = set([i.base.function for i in
+        reads = set([i.function for i in
                      flatten(retrieve_terminals(v.rhs) for v in self.values())])
         return reads - known
 
@@ -276,7 +275,7 @@ class FlowGraph(OrderedDict):
         for v in self.values():
             handle = retrieve_indexed(v)
             for i in handle:
-                found = mapper.setdefault(i.base.function, [])
+                found = mapper.setdefault(i.function, [])
                 if i not in found:
                     # Not using sets to preserve order
                     found.append(i)
@@ -284,9 +283,7 @@ class FlowGraph(OrderedDict):
 
 
 def makeit_ssa(exprs):
-    """
-    Convert an iterable of :class:`Eq`s into Static Single Assignment (SSA) form.
-    """
+    """Convert an iterable of Eqs into Static Single Assignment (SSA) form."""
     # Identify recurring LHSs
     seen = {}
     for i, e in enumerate(exprs):

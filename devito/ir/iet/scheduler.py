@@ -1,20 +1,21 @@
 from collections import OrderedDict
 
 from devito.cgen_utils import Allocator
-from devito.dimension import ConditionalDimension
 from devito.ir.iet import (Expression, Increment, LocalExpression, Element, Iteration,
                            List, Conditional, Section, HaloSpot, ExpressionBundle,
-                           MetaCall, MapExpressions, Transformer, FindNodes,
-                           FindSymbols, XSubs, iet_analyze, filter_iterations)
+                           MapExpressions, Transformer, FindNodes, FindSymbols, XSubs,
+                           iet_analyze, filter_iterations)
 from devito.symbolics import IntDiv, xreplace_indices
 from devito.tools import as_mapper
+from devito.types import ConditionalDimension
 
 __all__ = ['iet_build', 'iet_insert_C_decls']
 
 
 def iet_build(stree):
     """
-    Create an Iteration/Expression tree (IET) from a :class:`ScheduleTree`.
+    Create an Iteration/Expression tree (IET) from a ScheduleTree.
+
     The nodes in the returned IET are decorated with properties deriving from
     data dependence analysis.
     """
@@ -31,9 +32,7 @@ def iet_build(stree):
 
 
 def iet_make(stree):
-    """
-    Create an Iteration/Expression tree (IET) from a :class:`ScheduleTree`.
-    """
+    """Create an IET from a ScheduleTree."""
     nsections = 0
     queues = OrderedDict()
     for i in stree.visit():
@@ -43,39 +42,38 @@ def iet_make(stree):
 
         elif i.is_Exprs:
             exprs = [Increment(e) if e.is_Increment else Expression(e) for e in i.exprs]
-            body = [ExpressionBundle(i.shape, i.ops, i.traffic, body=exprs)]
+            body = ExpressionBundle(i.shape, i.ops, i.traffic, body=exprs)
 
         elif i.is_Conditional:
-            body = [Conditional(i.guard, queues.pop(i))]
+            body = Conditional(i.guard, queues.pop(i))
 
         elif i.is_Iteration:
             # Order to ensure deterministic code generation
             uindices = sorted(i.sub_iterators, key=lambda d: d.name)
             # Generate Iteration
-            body = [Iteration(queues.pop(i), i.dim, i.dim.limits, offsets=i.limits,
-                              direction=i.direction, uindices=uindices)]
+            body = Iteration(queues.pop(i), i.dim, i.dim._limits, offsets=i.limits,
+                             direction=i.direction, uindices=uindices)
 
         elif i.is_Section:
-            body = [Section('section%d' % nsections, body=queues.pop(i))]
+            body = Section('section%d' % nsections, body=queues.pop(i))
             nsections += 1
 
         elif i.is_Halo:
-            body = [HaloSpot(hs) for hs in i.halo_scheme.components] + queues.pop(i)
+            body = HaloSpot(i.halo_scheme, body=queues.pop(i))
 
-        queues.setdefault(i.parent, []).extend(body)
+        queues.setdefault(i.parent, []).append(body)
 
     assert False
 
 
 def iet_lower_dimensions(iet):
     """
-    Replace all :class:`DerivedDimension`s within the ``iet``'s expressions with
-    lower-level symbolic objects (other :class:`Dimension`s, or :class:`sympy.Symbol`).
+    Replace all DerivedDimensions within the ``iet``'s expressions with
+    lower-level symbolic objects (other Dimensions or Symbols).
 
-        * Array indices involving :class:`SteppingDimension`s are turned into
-          :class:`ModuloDimension`s.
+        * Array indices involving SteppingDimensions are turned into ModuloDimensions.
           Example: ``u[t+1, x] = u[t, x] + 1 >>> u[t1, x] = u[t0, x] + 1``
-        * Array indices involving :class:`ConditionalDimension`s used are turned into
+        * Array indices involving ConditionalDimensions used are turned into
           integer-division expressions.
           Example: ``u[t_sub, x] = u[time, x] >>> u[time / 4, x] = u[time, x]``
     """
@@ -105,32 +103,25 @@ def iet_lower_dimensions(iet):
     return iet
 
 
-def iet_insert_C_decls(iet, func_table=None):
+def iet_insert_C_decls(iet, external=None):
     """
-    Given an Iteration/Expression tree ``iet``, build a new tree with the
-    necessary symbol declarations. Declarations are placed as close as
-    possible to the first symbol use.
+    Given an IET, build a new tree with the necessary symbol declarations.
+    Declarations are placed as close as possible to the first symbol occurrence.
 
-    :param iet: The input Iteration/Expression tree.
-    :param func_table: (Optional) a mapper from callable names within ``iet``
-                       to :class:`Callable`s.
+    Parameters
+    ----------
+    iet : Node
+        The input Iteration/Expression tree.
+    external : tuple, optional
+        The symbols defined in some outer Callable, which therefore must not
+        be re-defined.
     """
-    func_table = func_table or {}
+    external = external or []
+
+    # Classify and then schedule declarations to stack/heap
     allocator = Allocator()
     mapper = OrderedDict()
-
-    # Detect all IET nodes accessing symbols that need to be declared
-    scopes = []
-    me = MapExpressions()
-    for k, v in me.visit(iet).items():
-        if k.is_Call:
-            func = func_table.get(k.name)
-            if func is not None and func.local:
-                scopes.extend(me.visit(func.root, queue=list(v)).items())
-        scopes.append((k, v))
-
-    # Classify, and then schedule declarations to stack/heap
-    for k, v in scopes:
+    for k, v in MapExpressions().visit(iet).items():
         if k.is_Expression:
             if k.is_scalar_assign:
                 # Inline declaration
@@ -138,10 +129,8 @@ def iet_insert_C_decls(iet, func_table=None):
                 continue
             objs = [k.write]
         elif k.is_Call:
-            objs = k.params
-        else:
-            raise NotImplementedError("Cannot schedule declarations for IET "
-                                      "node of type `%s`" % type(k))
+            objs = k.arguments
+
         for i in objs:
             try:
                 if i.is_LocalObject:
@@ -149,8 +138,8 @@ def iet_insert_C_decls(iet, func_table=None):
                     site = v[-1] if v else iet
                     allocator.push_stack(site, i)
                 elif i.is_Array:
-                    if i._mem_external:
-                        # Nothing to do; e.g., a user-provided Function
+                    if i in external:
+                        # The Array is to be defined in some foreign IET
                         continue
                     elif i._mem_stack:
                         # On the stack
@@ -168,9 +157,6 @@ def iet_insert_C_decls(iet, func_table=None):
     for k, v in allocator.onstack:
         mapper[k] = tuple(Element(i) for i in v)
     iet = Transformer(mapper, nested=True).visit(iet)
-    for k, v in list(func_table.items()):
-        if v.local:
-            func_table[k] = MetaCall(Transformer(mapper).visit(v.root), v.local)
 
     # Introduce declarations on the heap (if any)
     if allocator.onheap:

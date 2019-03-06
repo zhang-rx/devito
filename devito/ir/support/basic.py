@@ -1,11 +1,11 @@
 from cached_property import cached_property
 from sympy import Basic, S
 
-from devito.dimension import Dimension
 from devito.ir.support.space import Any, Backward
-from devito.symbolics import retrieve_terminals, q_affine, q_inc
-from devito.tools import (Tag, as_tuple, is_integer, filter_sorted,
-                          flatten, memoized_meth)
+from devito.symbolics import retrieve_terminals, q_monoaffine
+from devito.tools import (EnrichedTuple, Tag, as_tuple, is_integer,
+                          filter_sorted, flatten, memoized_meth)
+from devito.types import Dimension
 
 __all__ = ['Vector', 'IterationInstance', 'Access', 'TimedAccess', 'Scope']
 
@@ -17,11 +17,9 @@ class Vector(tuple):
 
     The elements of a Vector can be integers or any SymPy expression.
 
-    Notes on Vector comparison
-    ==========================
-
-    # Vector-scalar comparison
-    --------------------------
+    Notes
+    -----
+    1) Vector-scalar comparison
     If a comparison between a vector and a non-vector is attempted, then the
     non-vector is promoted to a vector; if this is not possible, an exception
     is raised. This is handy because it turns a vector-scalar comparison into
@@ -30,8 +28,7 @@ class Vector(tuple):
 
         (3, 4, 5) > 4 => (3, 4, 5) > (4, 4, 4) => False
 
-    # Comparing Vector entries when these are SymPy expression
-    ----------------------------------------------------------
+    2) Comparing Vector entries when these are SymPy expression
     When we compare two entries that are both generic SymPy expressions, it is
     generally not possible to determine the truth value of the relation. For
     example, the truth value of `3*i < 4*j` cannot be determined. In some cases,
@@ -151,8 +148,8 @@ class Vector(tuple):
         In particular, the *absolute value* of D_i represents the number of
         integer points that exist between self_i and sink_i.
 
-        Example
-        =======
+        Examples
+        --------
                  | 3 |           | 1 |               |  2  |
         source = | 2 | ,  sink = | 4 | , distance => | -2  |
                  | 1 |           | 5 |               | -4  |
@@ -163,16 +160,9 @@ class Vector(tuple):
 
 
 class IndexMode(Tag):
-
-    """
-    Tag for access functions.
-    """
-
+    """Tag for access functions."""
     pass
-
-
-CONSTANT = IndexMode('constant')
-AFFINE = IndexMode('affine')
+AFFINE = IndexMode('affine')  # noqa
 IRREGULAR = IndexMode('irregular')
 
 
@@ -180,15 +170,15 @@ class IterationInstance(Vector):
 
     """
     A representation of the iteration and data points accessed by an
-    :class:`Indexed` object. Three different concepts are distinguished:
+    Indexed object. Three different concepts are distinguished:
 
         * Index functions: the expressions telling what *iteration* space point
           is accessed.
-        * ``aindices``: the :class:`Dimension`s acting as iteration variables.
+        * ``aindices``: the Dimension's acting as iteration variables.
           There is one aindex for each index function. If the index function
           is non-affine, then it may not be possible to detect its aindex;
           in such a case, None is used as placeholder.
-        * ``findices``: the :class:`Dimension`s telling what *data* space point
+        * ``findices``: the Dimension's telling what *data* space point
           is accessed.
     """
 
@@ -246,16 +236,14 @@ class IterationInstance(Vector):
     def index_mode(self):
         index_mode = []
         for i, fi in zip(self, self.findices):
-            if is_integer(i):
-                index_mode.append(CONSTANT)
-            elif q_affine(i, fi):
+            if q_monoaffine(i, fi, self.findices):
                 index_mode.append(AFFINE)
             else:
                 dims = {i for i in i.free_symbols if isinstance(i, Dimension)}
                 try:
                     # There's still hope it's regular if a DerivedDimension is used
                     candidate = dims.pop()
-                    if candidate.parent == fi and q_affine(i, candidate):
+                    if candidate.root == fi and q_monoaffine(i, candidate, self.findices):
                         index_mode.append(AFFINE)
                         continue
                 except (KeyError, AttributeError):
@@ -267,14 +255,12 @@ class IterationInstance(Vector):
     def aindices(self):
         aindices = []
         for i, fi in zip(self, self.findices):
-            if is_integer(i):
-                aindices.append(None)
-            elif q_affine(i, fi):
+            if q_monoaffine(i, fi, self.findices):
                 aindices.append(fi)
             else:
                 dims = {i for i in i.free_symbols if isinstance(i, Dimension)}
                 aindices.append(dims.pop() if len(dims) == 1 else None)
-        return tuple(aindices)
+        return EnrichedTuple(*aindices, getters=self.findices)
 
     @cached_property
     def findices_affine(self):
@@ -286,39 +272,58 @@ class IterationInstance(Vector):
                      if im == IRREGULAR)
 
     def affine(self, findices):
-        """Return True if all of the provided findices appear in self and are
-        affine, False otherwise."""
+        """
+        Return True if all of the provided findices appear in self and are
+        affine, False otherwise.
+        """
         return set(as_tuple(findices)).issubset(set(self.findices_affine))
 
     def affine_if_present(self, findices):
-        """Return False if any of the provided findices appears in self and
-        is not affine, True otherwise."""
+        """
+        Return False if any of the provided findices appears in self and
+        is not affine, True otherwise.
+        """
         findices = as_tuple(findices)
         return (set(findices) & set(self.findices)).issubset(set(self.findices_affine))
 
-    def touch_halo(self, findices):
-        """Return True if self accesses the halo along any of the provided findices,
-        False otherwise."""
+    def touched_halo(self, findex):
+        """
+        Return a boolean 2-tuple, one entry for each ``findex`` DataSide. True
+        means that the halo is touched along that DataSide.
+        """
         # Given `d` \in findices, iterating over [0, size_d):
-        # * if self[d] - d < self.function._offset_domain[d].left, then `self` will
-        #   definitely touch the left-halo when d=0
-        # * if self[d] - d > self.function._offset_domain[d].left, then `self` will
-        #   definitely touch the right-halo when d=size_d-1
-        # TODO: the underlying assumption here is that `d` iterates in [0, size_d],
-        # which is the typical case. If that's not the case, we have to generalise
-        # this method. For this, we will have to attach more iteration space
-        # information to IterationInstance, such as start/end point, increment, etc.
-        return all(self[d] - d != self.function._offset_domain[d].left
-                   for d in as_tuple(findices))
+        # * if `self[d] - d < self.function._size_halo[d].left`, then `self` will
+        #   definitely touch the left-halo when `d=0`
+        # * if `self[d] - d > self.function._size_halo[d].left`, then `self` will
+        #   definitely touch the right-halo when `d=size_d-1`
+        aindex = self.aindices[findex]
+        size_halo_left = self.function._size_halo[findex].left
+        try:
+            touch_halo_left = bool(self[findex] - aindex < size_halo_left)
+        except TypeError:
+            # Conservatively assume True. We might end up here, for example,
+            # in the following cases:
+            # * The `aindex` doesn't appear in `self[findex]`, such as when the
+            #   `aindex` is a pure number of a different Dimension
+            # * `self[findex]` isn't affine in the `aindex`
+            touch_halo_left = True
+        try:
+            touch_halo_right = bool(self[findex] - aindex > size_halo_left)
+        except TypeError:
+            # Same considerations as in the try-except above
+            touch_halo_right = True
+        return (touch_halo_left, touch_halo_right)
 
     def irregular(self, findices):
-        """Return True if all of the provided findices appear in self and are
-        irregular, False otherwise."""
+        """
+        Return True if all of the provided findices appear in self and are
+        irregular, False otherwise.
+        """
         return set(as_tuple(findices)).issubset(set(self.findices_irregular))
 
     @property
     def is_regular(self):
-        return all(i in (CONSTANT, AFFINE) for i in self.index_mode)
+        return all(i is AFFINE for i in self.index_mode)
 
     @property
     def is_irregular(self):
@@ -329,14 +334,17 @@ class IterationInstance(Vector):
         return self.rank == 0
 
     def distance(self, other, findex=None, view=None):
-        """Compute the distance from ``self`` to ``other``.
+        """
+        Compute the distance from ``self`` to ``other``.
 
-        :param other: The :class:`IterationInstance` from which the distance
-                      is computed.
-        :param findex: (Optional) if supplied, compute the distance only up to
-                       and including ``findex`` (defaults to None).
-        :param view: (Optional) an iterable of ``findices`` (defaults to None); if
-                     supplied, project the distance along these dimensions.
+        Parameters
+        ----------
+        other : IterationInstance
+            The IterationInstance from which the distance is computed.
+        findex : Dimension, optional
+            If supplied, compute the distance only up to and including ``findex``.
+        view : list of Dimension, optional
+            If supplied, project the distance along these Dimensions.
         """
         if not isinstance(other, IterationInstance):
             raise TypeError("Cannot compute distance from obj of type %s", type(other))
@@ -357,8 +365,10 @@ class IterationInstance(Vector):
             return Vector(*proj)
 
     def section(self, findices):
-        """Return a view of ``self`` in which the slots corresponding to the
-        provided ``findices`` have been zeroed."""
+        """
+        Return a view of ``self`` in which the slots corresponding to the
+        provided ``findices`` have been zeroed.
+        """
         return Vector(*[d if i not in as_tuple(findices) else 0
                         for d, i in zip(self, self.findices)])
 
@@ -366,14 +376,13 @@ class IterationInstance(Vector):
 class Access(IterationInstance):
 
     """
-    A representation of the access performed by a :class:`Indexed` object
+    A representation of the access performed by an Indexed object
     (a scalar in the degenerate case).
 
-    Notes on Access comparison
-    ==========================
-
+    Notes
+    -----
     The comparison operators ``==, !=, <, <=, >, >=`` should be regarded as
-    operators for lexicographic ordering of :class:`Access` objects, based
+    operators for lexicographic ordering of Access objects, based
     on the values of the index functions (and the index functions only).
 
     For example, if two Access objects A and B employ the same index functions,
@@ -432,7 +441,7 @@ class Access(IterationInstance):
 class TimedAccess(Access):
 
     """
-    A special :class:`Access` object enriched with: ::
+    A special Access object enriched with: ::
 
         * a "timestamp"; that is, an integer indicating the access location
           within the execution flow;
@@ -447,25 +456,24 @@ class TimedAccess(Access):
     assumptions to be conservative.
 
     Examples
-    ========
+    --------
     Given:
     findices = [x, y, z]
     w = an object of type Dimension
 
-           | x+1 |           |  x  |           |  x  |          | w |          | x+y |
-    obj1 = | y+2 | ,  obj2 = |  4  | , obj3 => |  x  | , obj4 = | y | , obj5 = |  y  |
-           | z-3 |           | z+1 |           |  y  |          | z |          |  z  |
+           | x+1 |           |  x  |          |  x  |          | w |          | x+y |
+    obj1 = | y+2 | ,  obj2 = |  4  | , obj3 = |  x  | , obj4 = | y | , obj5 = |  y  |
+           | z-3 |           | z+1 |          |  y  |          | z |          |  z  |
 
     We have that: ::
 
         * obj1 and obj2 are regular;
-        * obj3 is irregular because an findex, ``x``, appears outside of its index
-          function (i.e., in the second slot, whew ``y`` is expected);
+        * obj3 is irregular because a findex, ``x``, appears outside of its index
+          function (i.e., in the second slot, when ``y`` is expected);
         * obj4 is irregular, because a different dimension, ``w``, is used in place
           of ``x`` within the first index function, where ``x`` is expected;
         * obj5 is irregular, as two findices appear in the same index function --
           the one in the first slot, where only ``x`` is expected.
-
     """
 
     def __new__(cls, indexed, mode, timestamp, directions):
@@ -533,7 +541,9 @@ class TimedAccess(Access):
 
 class Dependence(object):
 
-    """A data dependence between two :class:`Access` objects."""
+    """
+    A data dependence between two Access objects.
+    """
 
     def __init__(self, source, sink):
         assert isinstance(source, TimedAccess) and isinstance(sink, TimedAccess)
@@ -621,8 +631,7 @@ class Dependence(object):
 
     @memoized_meth
     def is_carried(self, dim=None):
-        """Return True if definitely a dimension-carried dependence,
-        False otherwise."""
+        """Return True if definitely a dimension-carried dependence, False otherwise."""
         try:
             if dim is None:
                 return self.distance > 0
@@ -634,8 +643,10 @@ class Dependence(object):
 
     @memoized_meth
     def is_reduce(self, dim):
-        """Return True if ``dim`` may represent a reduction dimension for
-        ``self``, False otherwise."""
+        """
+        Return True if ``dim`` may represent a reduction dimension for
+        ``self``, False otherwise.
+        """
         test0 = self.is_increment
         test1 = self.is_regular
         test2 = all(i not in self._defined_findices for i in dim._defines)
@@ -643,15 +654,18 @@ class Dependence(object):
 
     @memoized_meth
     def is_reduce_atmost(self, dim=None):
-        """More relaxed than :meth:`is_reduce`. Return True  if ``dim`` may
+        """
+        More relaxed than :meth:`is_reduce`. Return True  if ``dim`` may
         represent a reduction dimension for ``self`` or if `self`` is definitely
-        independent of ``dim``, False otherwise."""
+        independent of ``dim``, False otherwise.
+        """
         return self.is_reduce(dim) or self.is_indep(dim)
 
     @memoized_meth
     def is_indep(self, dim=None):
-        """Return True if definitely a dimension-independent dependence,
-        False otherwise."""
+        """
+        Return True if definitely a dimension-independent dependence, False otherwise.
+        """
         try:
             if self.source.is_irregular or self.sink.is_irregular:
                 # Note: we cannot just return `self.distance == 0` as an irregular
@@ -691,7 +705,7 @@ class DependenceGroup(list):
 
     @cached_property
     def functions(self):
-        """Return the :class:`TensorFunction`s inducing a dependence."""
+        """Return the DiscreteFunctions inducing a dependence."""
         return frozenset({i.function for i in self})
 
     @cached_property
@@ -724,8 +738,10 @@ class DependenceGroup(list):
         return DependenceGroup([i for i in self if i not in other])
 
     def project(self, function):
-        """Return a new DependenceGroup retaining only the dependences due to
-        the provided function."""
+        """
+        Return a new DependenceGroup retaining only the dependences due to
+        the provided function.
+        """
         return DependenceGroup(i for i in self if i.function is function)
 
 
@@ -733,8 +749,8 @@ class Scope(object):
 
     def __init__(self, exprs):
         """
-        A Scope represents a group of :class:`TimedAccess` objects extracted
-        from some :class:`IREq` ``exprs``. The expressions must be provided
+        A Scope represents a group of TimedAcces objects extracted
+        from some IREq ``exprs``. The expressions must be provided
         in program order.
         """
         exprs = as_tuple(exprs)
@@ -745,14 +761,14 @@ class Scope(object):
             # reads
             for j in retrieve_terminals(e.rhs):
                 v = self.reads.setdefault(j.function, [])
-                mode = 'R' if not q_inc(e) else 'RI'
+                mode = 'RI' if e.is_Increment and j.function is e.lhs.function else 'R'
                 v.append(TimedAccess(j, mode, i, e.ispace.directions))
             # write
             v = self.writes.setdefault(e.lhs.function, [])
-            mode = 'W' if not q_inc(e) else 'WI'
+            mode = 'WI' if e.is_Increment else 'W'
             v.append(TimedAccess(e.lhs, mode, i, e.ispace.directions))
             # if an increment, we got one implicit read
-            if q_inc(e):
+            if e.is_Increment:
                 v = self.reads.setdefault(e.lhs.function, [])
                 v.append(TimedAccess(e.lhs, 'RI', i, e.ispace.directions))
 
@@ -807,8 +823,9 @@ class Scope(object):
                         is_flow = (r < w) or (r == w and r.lex_ge(w))
                     except TypeError:
                         # Non-integer vectors are not comparable.
-                        # Conservatively, we assume it is a dependence
-                        is_flow = True
+                        # Conservatively, we assume it is a dependence, unless
+                        # it's a read-for-increment
+                        is_flow = not r.is_read_increment
                     if is_flow:
                         found.append(Dependence(w, r))
         return found
@@ -824,8 +841,9 @@ class Scope(object):
                         is_anti = (r > w) or (r == w and r.lex_lt(w))
                     except TypeError:
                         # Non-integer vectors are not comparable.
-                        # Conservatively, we assume it is a dependence
-                        is_anti = True
+                        # Conservatively, we assume it is a dependence, unless
+                        # it's a read-for-increment
+                        is_anti = not r.is_read_increment
                     if is_anti:
                         found.append(Dependence(r, w))
         return found
@@ -854,6 +872,6 @@ class Scope(object):
 
     @memoized_meth
     def d_from_access(self, access):
-        """Retrieve all dependences involving a given :class:`TimedAccess`."""
+        """Retrieve all dependences involving a given TimedAccess."""
         return DependenceGroup(d for d in self.d_all
                                if d.source is access or d.sink is access)
