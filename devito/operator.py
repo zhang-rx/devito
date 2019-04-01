@@ -21,6 +21,7 @@ from devito.profiling import create_profile
 from devito.symbolics import indexify
 from devito.tools import (Signer, ReducerMap, as_tuple, flatten, filter_ordered,
                           filter_sorted, split)
+from devito.autodiff import differentiate
 
 __all__ = ['Operator']
 
@@ -138,6 +139,9 @@ class Operator(Callable):
         subs = kwargs.get("subs", {})
         dse = kwargs.get("dse", configuration['dse'])
 
+        adjoint = kwargs.get("adjoint", False)
+        assert(adjoint in (True, False))
+
         # Header files, etc.
         self._headers = list(self._default_headers)
         self._includes = list(self._default_includes)
@@ -164,6 +168,10 @@ class Operator(Callable):
         self._input = filter_sorted(flatten(e.reads + e.writes for e in expressions))
         self._output = filter_sorted(flatten(e.writes for e in expressions))
         self._dimensions = filter_sorted(flatten(e.dimensions for e in expressions))
+
+        # Automatic differentiation
+        if adjoint:
+            expressions = differentiate(expressions)
 
         # Group expressions based on their iteration space and data dependences,
         # and apply the Devito Symbolic Engine (DSE) for flop optimization
