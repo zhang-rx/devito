@@ -2,7 +2,7 @@ from devito.symbolics.search import retrieve_indexed, search
 from sympy import diff
 from devito.types import TimeFunction, Dimension
 from devito.ir.equations.equation import LoweredEq
-from devito.ir.support.space import DataSpace, Interval, IntervalGroup
+from devito.ir.support.space import DataSpace, Interval, IntervalGroup, IterationSpace
 from devito.equation import Inc
 
 
@@ -16,6 +16,7 @@ def differentiate(expressions):
         for i in indexeds:
             i_d, adjoint_mapper = diff_indexed(i, adjoint_mapper)
             state = extract_le_state(e)
+
             old_ds = state['dspace']
             from IPython import embed
             embed()
@@ -23,6 +24,7 @@ def differentiate(expressions):
             new_parts = {i_d.function: old_ds.parts[i.function]}
             new_ds = DataSpace(old_ds.intervals, new_parts)
             state['dspace'] = new_ds
+            
             d_eqn = LoweredEq(i_d, i_d+diff(e.rhs, i)*adjoint_output_fn, **state)
             derivatives.append(d_eqn)
 
@@ -36,8 +38,9 @@ def differentiate(expressions):
                     if (d_ind - e_ind) != 0:
                         subs[ind] = e_ind - d_ind
             derivatives[i] = shift_le_index(d, subs)
-        #from IPython import embed
-        #embed()
+
+        from IPython import embed
+        embed()
         all_derivatives += derivatives
     return all_derivatives
 
@@ -70,6 +73,13 @@ def shift_le_index(le, mapper):
     ds = state['dspace']
     new_parts = {le.lhs.function: shift_interval_group(ds.parts[le.lhs.function], mapper)}
     new_ds = DataSpace(shift_interval_group(ds.intervals, mapper), new_parts)
+
+    ispace = state['ispace']
+    new_ispace = IterationSpace(shift_interval_group(ispace.intervals, mapper), ispace.sub_iterators, ispace.directions)
+
+    state['dspace'] = new_ds
+    state['ispace'] = new_ispace
+
     new_le = LoweredEq(le.lhs.subs(s_m), le.rhs.subs(s_m), **state)
     return new_le
 
