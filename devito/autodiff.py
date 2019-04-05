@@ -17,6 +17,8 @@ def differentiate(expressions):
             i_d, adjoint_mapper = diff_indexed(i, adjoint_mapper)
             state = extract_le_state(e)
             old_ds = state['dspace']
+            from IPython import embed
+            embed()
             new_eq = Inc(i_d, diff(e.rhs, i)*adjoint_output_fn)
             new_parts = {i_d.function: old_ds.parts[i.function]}
             new_ds = DataSpace(old_ds.intervals, new_parts)
@@ -65,12 +67,9 @@ def extract_le_state(lowered_eq):
 def shift_le_index(le, mapper):
     s_m = dict([(k, k+v) for k, v in mapper.items()])
     state = extract_le_state(le)
-    
     ds = state['dspace']
     new_parts = {le.lhs.function: shift_interval_group(ds.parts[le.lhs.function], mapper)}
     new_ds = DataSpace(shift_interval_group(ds.intervals, mapper), new_parts)
-    from IPython import embed
-    embed()
     new_le = LoweredEq(le.lhs.subs(s_m), le.rhs.subs(s_m), **state)
     return new_le
 
