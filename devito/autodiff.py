@@ -111,4 +111,5 @@ class ADInterval(AbstractInterval):
     def overlap(self, other):
         return self.lower
 
-    def intersection()
+    def intersection():
+        pass
