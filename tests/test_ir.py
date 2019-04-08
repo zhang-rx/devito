@@ -216,6 +216,11 @@ class TestSpace(object):
         assert ix.intersection(ix4) == Interval(x, 1, 2)
         assert ix.intersection(ix5) == Interval(x, -2, 0)
 
+        ix6 = Interval(x, -1, -1)
+        ix7 = Interval(x, 1, 1)
+
+        assert ix6.intersection(ix7) == Interval(x, 1, -1)
+
     def test_intervals_union(self):
         nullx = NullInterval(x)
 
