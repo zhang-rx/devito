@@ -203,9 +203,9 @@ class TestSpace(object):
         ix3 = Interval(x, 3, 4)
 
         # All defined disjoint
-        assert ix.intersection(ix2) == nullx
-        assert ix.intersection(ix3) == nullx
-        assert ix2.intersection(ix3) == nullx
+        assert ix.intersection(ix2) == Interval(x, -2, -3)
+        assert ix.intersection(ix3) == Interval(x, 3, 2)
+        assert ix2.intersection(ix3) == Interval(x, 3, -3)
         assert ix.intersection(iy) == nullx
         assert iy.intersection(ix) == nully
 

@@ -147,10 +147,9 @@ class Interval(AbstractInterval):
         return (self.lower, self.upper)
 
     def intersection(self, o):
-        if self.overlap(o):
-            return Interval(self.dim, max(self.lower, o.lower), min(self.upper, o.upper))
-        else:
+        if self.dim != o.dim:
             return NullInterval(self.dim)
+        return Interval(self.dim, max(self.lower, o.lower), min(self.upper, o.upper))
 
     def union(self, o):
         if self.overlap(o):
