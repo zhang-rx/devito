@@ -4,7 +4,6 @@ from devito.types import TimeFunction, Dimension
 from devito.ir.equations.equation import LoweredEq
 from devito.ir.support.space import (DataSpace, Interval, IntervalGroup,
                                      IterationSpace, AbstractInterval)
-from devito.equation import Inc
 
 
 def differentiate(expressions):
@@ -20,7 +19,6 @@ def differentiate(expressions):
 
             old_ds = state['dspace']
 
-            new_eq = Inc(i_d, diff(e.rhs, i)*adjoint_output_fn)
             new_parts = {i_d.function: old_ds.parts[i.function]}
             new_ds = DataSpace(old_ds.intervals, new_parts)
             state['dspace'] = new_ds
@@ -86,7 +84,8 @@ def shift_interval_group(interval_group, mapper):
     new_intervals = []
     for interval in interval_group:
         if interval.dim in mapper:
-            new_intervals.append(Interval(interval.dim, interval.lower+mapper[interval.dim],
+            new_intervals.append(Interval(interval.dim,
+                                          interval.lower+mapper[interval.dim],
                                           interval.upper+mapper[interval.dim]))
         else:
             new_intervals.append(interval)
@@ -104,7 +103,7 @@ def retrieve_dimension(expr, mode='unique', deep=False):
 
 class ADInterval(AbstractInterval):
     def __init__(self, lower, upper):
-        assert(lower<=upper)
+        assert(lower <= upper)
         self.lower = lower
         self.upper = upper
 
