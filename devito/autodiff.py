@@ -4,7 +4,7 @@ from devito.types import TimeFunction, Dimension
 from devito.ir.equations.equation import LoweredEq
 from devito.ir.support.space import (DataSpace, Interval, IntervalGroup,
                                      IterationSpace, AbstractInterval)
-
+from devito.types.dimension import SubDimension
 
 def differentiate(expressions):
     adjoint_mapper = {}
@@ -12,6 +12,7 @@ def differentiate(expressions):
     for e in expressions:
         indexeds = retrieve_indexed(e.rhs, mode='all', deep=True)
         adjoint_output_fn, adjoint_mapper = diff_indexed(e.lhs, adjoint_mapper)
+        
         derivatives = []
         for i in indexeds:
             i_d, adjoint_mapper = diff_indexed(i, adjoint_mapper)
@@ -36,6 +37,50 @@ def differentiate(expressions):
                     if (d_ind - e_ind) != 0:
                         subs[ind] = e_ind - d_ind
             derivatives[i] = shift_le_index(d, subs)
+
+        lhs_terms = set()
+
+        for d in derivatives:
+            lhs_terms.add(d.lhs)
+
+        assert(len(lhs_terms) == 1)
+
+        lhs_term = lhs_terms.pop()
+
+        dim_index = 1
+        intervals = []
+        for d in derivatives:
+            intervals.append(d.ispace.intervals[dim_index])
+
+        intersection = IntervalGroup.generate('intersection', *[IntervalGroup(x) for x in intervals])
+
+        new_equations = [replace_interval(x, intersection[0]) for x in derivatives]
+
+        # r[i] = u[i-2]+u[i-1]+u[i]+u[i+1]
+
+        left_extent = abs(min([i.lower for i in intervals])) + 1
+        right_extent = abs(max([i.upper for i in intervals])) + 1
+        dim = retrieve_dimension(d.lhs.indices[dim_index]).pop()
+        left_remainder = SubDimension.left("%s_lr" % dim.name, dim, left_extent)
+        right_remainder = SubDimension.right("%s_rr" % dim.name, dim, right_extent)
+
+        # i = Interval(xl, -1, 1)
+
+        
+        
+        for d in derivatives:
+            left remainder interval
+            remainder_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
+            left remainder equation
+            new_equation = 
+            new_equations.append(replace_interval(d, remainder_interval))
+            right remainder interval
+            right remainder equation
+
+        from IPython import embed
+        embed()
+
+        derivatives = new_equations
 
         all_derivatives += derivatives
     return all_derivatives
@@ -101,14 +146,29 @@ def retrieve_dimension(expr, mode='unique', deep=False):
     return search(expr, q_dimension, mode, 'dfs', deep)
 
 
-class ADInterval(AbstractInterval):
-    def __init__(self, lower, upper):
-        assert(lower <= upper)
-        self.lower = lower
-        self.upper = upper
+def replace_interval(loweredeq, interval):
+    state = extract_le_state(loweredeq)
 
-    def overlap(self, other):
-        return self.lower
+    old_ds = state['dspace']
+    new_ds = DataSpace(replace_interval_group(old_ds.intervals, interval), old_ds.parts)
 
-    def intersection():
-        pass
+    old_is = state['ispace']
+    new_is = IterationSpace(replace_interval_group(old_is.intervals, interval),
+                                old_is.sub_iterators, old_is.directions)
+
+    state['dspace'] = new_ds
+    state['ispace'] = new_is
+
+    return LoweredEq(loweredeq.lhs, loweredeq.rhs, **state)
+
+
+def replace_interval_group(intervalgroup, interval):
+    new_intervals = []
+
+    for i in intervalgroup:
+        if i.dim == interval.dim:
+            new_intervals.append(interval)
+        else:
+            new_intervals.append(i)
+
+    return IntervalGroup(new_intervals)
