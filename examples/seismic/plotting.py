@@ -94,11 +94,12 @@ def plot_shotrecord(rec, model, t0, tn, colorbar=True):
     :param t0: Start of time dimension to plot
     :param tn: End of time dimension to plot
     """
-    scale = np.max(rec) / 10.
+    scale = np.max(rec) / 100.
     extent = [model.origin[0], model.origin[0] + 1e-3*model.domain_size[0],
               1e-3*tn, t0]
-
-    plot = plt.imshow(rec, vmin=-scale, vmax=scale, cmap=cm.gray, extent=extent)
+    
+    ratio = extent[1] / extent[3]
+    plot = plt.imshow(rec, vmin=-scale, vmax=scale, cmap=cm.gray, extent=extent, aspect=ratio)
     plt.xlabel('X position (km)')
     plt.ylabel('Time (s)')
 
