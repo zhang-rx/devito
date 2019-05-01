@@ -69,18 +69,16 @@ def differentiate(expressions):
         
         
         for d in derivatives:
-            left remainder interval
-            remainder_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
-            left remainder equation
-            new_equation = 
-            new_equations.append(replace_interval(d, remainder_interval))
-            right remainder interval
-            right remainder equation
+            pass
+            # left remainder interval
+            # remainder_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
+            # left remainder equation
+            # new_equation = 
+            # new_equations.append(replace_interval(d, remainder_interval))
+            # right remainder interval
+            # right remainder equation
 
-        from IPython import embed
-        embed()
-
-        derivatives = new_equations
+        # derivatives = new_equations
 
         all_derivatives += derivatives
     return all_derivatives
