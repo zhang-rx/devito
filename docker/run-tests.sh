@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-PYTHONPATH=/app /venv/bin/python -m pytest tests/
+PYTHONPATH=/home/devito/.conda/envs/devito /home/devito/.conda/envs/devito/bin/python -m pytest tests/
