@@ -61,7 +61,7 @@ jobs:
     displayName: "Build container"
     inputs:
       command: 'build'
-      dockerFile: Dockerfile.pipelines
+      dockerFile: docker/Dockerfile
       arguments:
         --build-arg gccVersion=$(gccVersion)
         --build-arg installWithPip=$(installWithPip)
