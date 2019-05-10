@@ -118,4 +118,7 @@ RUN if [ $installWithPip == "true" ] ; then \
       fi ; \
     fi
 
-ENTRYPOINT /home/devito/azure-pipelines.py
+RUN source activate devito ; \
+    pip install jupyter
+
+#ENTRYPOINT /home/devito/docker/entrypoint.sh
