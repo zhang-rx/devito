@@ -36,7 +36,7 @@ ARG installWithPip=false
 ENV testWithPip=$installWithPip
 
 # Use a different back-end?
-ARG DEVITO_BACKEND=none
+ARG DEVITO_BACKEND=core
 ENV DEVITO_BACKEND=$DEVITO_BACKEND
 
 # Use OpenMP?
@@ -85,6 +85,17 @@ ENV PATH=/usr/local/miniconda/bin:$PATH
 RUN conda config --set always_yes yes --set changeps1 no
 RUN conda update -q conda
 
+ADD docker/run-jupyter.sh /jupyter
+ADD docker/run-tests.sh /tests
+ADD docker/run-print-defaults.sh /print-defaults
+ADD docker/entrypoint.sh /docker-entrypoint.sh
+
+RUN chmod +x \
+    /print-defaults \
+    /jupyter \
+    /tests \
+    /docker-entrypoint.sh
+
 RUN adduser --disabled-password --gecos "" devito
 
 COPY . /home/devito
@@ -120,17 +131,6 @@ RUN if [ $installWithPip == "true" ] ; then \
 
 RUN source activate devito ; \
     pip install jupyter
-
-ADD docker/run-jupyter.sh /jupyter
-ADD docker/run-tests.sh /tests
-ADD docker/run-print-defaults.sh /print-defaults
-ADD docker/entrypoint.sh /docker-entrypoint.sh
-
-RUN chmod +x \
-    /print-defaults \
-    /jupyter \
-    /tests \
-    /docker-entrypoint.sh
 
 EXPOSE 8888
 
