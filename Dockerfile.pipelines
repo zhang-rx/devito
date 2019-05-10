@@ -121,4 +121,19 @@ RUN if [ $installWithPip == "true" ] ; then \
 RUN source activate devito ; \
     pip install jupyter
 
-#ENTRYPOINT /home/devito/docker/entrypoint.sh
+ADD docker/run-jupyter.sh /jupyter
+ADD docker/run-tests.sh /tests
+ADD docker/run-print-defaults.sh /print-defaults
+ADD docker/entrypoint.sh /docker-entrypoint.sh
+
+RUN chmod +x \
+    /print-defaults \
+    /jupyter \
+    /tests \
+    /docker-entrypoint.sh
+
+EXPOSE 8888
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["/jupyter"]
+
