@@ -1,7 +1,7 @@
 FROM python:3.6
 
 RUN apt-get update && apt-get install -y -q \ 
-    mpich git \ 
+    mpich git apt-utils \ 
     libmpich-dev 
 
 RUN pip install --no-cache notebook
