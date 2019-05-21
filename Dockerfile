@@ -1,6 +1,8 @@
-##############
-# For Binder
 FROM python:3.7-slim
+
+RUN apt-get update && apt-get install -y -q \ 
+    mpich git \ 
+    libmpich-dev 
 
 RUN pip install --no-cache notebook
 
@@ -16,10 +18,6 @@ RUN adduser --disabled-password \
     ${NB_USER}
 WORKDIR ${HOME}
 ##############
-
-RUN apt-get update && apt-get install -y -q \ 
-    mpich \ 
-    libmpich-dev 
 
 ADD ./requirements.txt /app/requirements.txt
 
