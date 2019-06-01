@@ -24,6 +24,7 @@ ADD ./requirements.txt /app/requirements.txt
 RUN python3 -m venv /venv && \
     /venv/bin/pip install --no-cache-dir --upgrade pip && \
     /venv/bin/pip install --no-cache-dir jupyter && \
+    /venv/bin/pip install --no-cache-dir matplotlib && \
     /venv/bin/pip install --no-cache-dir -r /app/requirements.txt
 
 ADD ./devito /app/devito
