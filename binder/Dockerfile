@@ -16,8 +16,7 @@ RUN adduser --disabled-password \
     --gecos "Default user" \
     --uid ${NB_UID} \
     ${NB_USER}
-WORKDIR ${HOME}
-##############
+#############
 
 ADD ./requirements.txt /app/requirements.txt
 
@@ -36,6 +35,9 @@ ADD docker/run-tests.sh /tests
 ADD docker/run-print-defaults.sh /print-defaults
 ADD docker/entrypoint.sh /docker-entrypoint.sh
 
+USER ${USER}
+
+RUN chown -R ${USER} /app
 RUN chmod +x \
     /print-defaults \
     /jupyter \
