@@ -35,8 +35,6 @@ ADD docker/run-tests.sh /tests
 ADD docker/run-print-defaults.sh /print-defaults
 ADD docker/entrypoint.sh /docker-entrypoint.sh
 
-USER ${USER}
-
 RUN chown -R ${USER} /app
 RUN chmod +x \
     /print-defaults \
@@ -44,6 +42,7 @@ RUN chmod +x \
     /tests \
     /docker-entrypoint.sh
 
+USER ${USER}
 WORKDIR /app
 
 ENV DEVITO_ARCH="gcc"
