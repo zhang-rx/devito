@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import h5py
 
 from examples.seismic.utils import scipy_smooth
 from devito import Grid, SubDomain, Function, Constant, warning, mmin, mmax
@@ -725,3 +726,27 @@ class ModelElastic(GenericModel):
         # The CFL condtion is then given by
         # dt < h / (sqrt(2) * max(vp)))
         return self.dtype(.5*mmin(self.spacing) / (np.sqrt(2)*mmax(self.vp)))
+
+
+def from_hdf5(filename, **kwargs):
+    f = h5py.File(filename, 'r')
+    origin = kwargs.pop('origin', None)
+    if origin is None:
+        origin_key = kwargs.pop('origin_key', 'o')
+        origin = f[origin_key]
+
+    spacing = kwargs.pop('spacing', None)
+    if spacing is None:
+        spacing_key = kwargs.pop('spacing_key', 'd')
+        spacing = f[spacing_key]
+    nbpml = kwargs.pop('nbpml', 20)
+    datakey = kwargs.pop('datakey', None)
+    if datakey is None:
+        raise ValueError("datakey must be known - what is the name of the" +
+                         "data in the file?")
+    shape = f[datakey].shape
+    space_order = kwargs.pop('space_order', None)
+    dtype = kwargs.pop('dtype', None)
+    data = f[datakey][()]
+    return Model(space_order=space_order, vp=data, origin=origin, shape=shape,
+                 dtype=dtype, spacing=spacing, nbpml=nbpml)
