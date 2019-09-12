@@ -1,4 +1,5 @@
 import os
+import pwd
 
 import click
 
@@ -14,13 +15,11 @@ def menu():
 @menu.command(name='generate')
 @option_simulation
 @click.option('-nn', multiple=True, default=[1], help='Number of nodes')
-@click.option('-ncpus', default=1, help='Number of cores *per node*')  # Should be ncores
 @click.option('-mem', default=120, help='Requested DRAM *per node*')
-@click.option('-np', default=1, help='Number of MPI processes *per node*')
+@click.option('-np', default=1, help='*Total* number of MPI processes')
 @click.option('-nt', default=1, help='Number of OpenMP threads *per MPI process*')
 @click.option('--mpi', multiple=True, default=['basic'], help='Devito MPI mode(s)')
 @click.option('--arch', default='unknown', help='Test-bed architecture')
-@click.option('-r', '--resultsdir', default='results', help='Results directory')
 @click.option('--load', multiple=True, default=[], help='Modules to be loaded')
 @click.option('--export', multiple=True, default=[], help='Env vars to be exported')
 def generate(**kwargs):
@@ -34,17 +33,30 @@ def generate(**kwargs):
     args['load'] = '\n'.join('module load %s' % i for i in args['load'])
     args['export'] = '\n'.join('export %s' % i for i in args['export'])
 
-    template_header = """\
-#!/bin/bash
+    username = pwd.getpwuid(os.getuid())[0]
+    args['workdir'] = '/home/%s/Scratch/output' % username
+    args['resultsdir'] = '%s/devito-results' % args['workdir']
 
-#PBS -lselect=%(nn)s:ncpus=%(ncpus)s:mem=120gb:mpiprocs=%(np)s:ompthreads=%(nt)s
-#PBS -lwalltime=02:00:00
+    template_header = """\
+#!/bin/bash -l
+
+#$ -A Imperial_ESE
+
+#$ -S /bin/bash
+
+#$ -l h_rt=0:10:0
+
+#$ -l mem=64G
+
+#$ -l tmpfs=15G
+
+#$ -pe mpi %(np)s
+
+#$ -wd %(workdir)s
 
 lscpu
 
 %(load)s
-
-cd %(home)s
 
 source activate devito
 
@@ -53,12 +65,16 @@ export DEVITO_ARCH=intel
 export DEVITO_OPENMP=1
 export DEVITO_LOGGING=DEBUG
 
+export OMP_NUM_THREADS=%(nt)s
+
+export TMPDIR=%(workdir)s/devito-cache
+
 %(export)s
 
 cd benchmarks/user
 """  # noqa
     template_cmd = """\
-DEVITO_MPI=%(mpi)s mpiexec python benchmark.py bench -P %(problem)s -bm O2 -d %(shape)s -so %(space_order)s --tn %(tn)s -x 1 --arch %(arch)s -r %(resultsdir)s\
+DEVITO_MPI=%(mpi)s gerun -ppn 2 -print-rank-map python %(home)s/benchmarks/user/benchmark.py bench -P %(problem)s -bm O2 -d %(shape)s -so %(space_order)s --tn %(tn)s -x 1 --arch %(arch)s -r %(resultsdir)s\
 """  # noqa
 
     # Generate one PBS file for each `np` value
