@@ -4,8 +4,6 @@ from examples.seismic import PointSource, Receiver
 from examples.seismic.acoustic.operators import (
     ForwardOperator, AdjointOperator, GradientOperator, BornOperator
 )
-from examples.checkpointing.checkpoint import DevitoCheckpoint, CheckpointOperator
-from pyrevolve import Revolver
 
 
 class AcousticWaveSolver(object):
