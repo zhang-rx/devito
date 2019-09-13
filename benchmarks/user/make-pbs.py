@@ -14,14 +14,10 @@ def menu():
 @menu.command(name='generate')
 @option_simulation
 @click.option('-nn', multiple=True, default=[1], help='Number of nodes')
-@click.option('-ncpus', default=1, help='Number of cores *per node*')  # Should be ncores
-@click.option('-mem', default=120, help='Requested DRAM *per node*')
-@click.option('-np', default=1, help='Number of MPI processes *per node*')
 @click.option('-nt', default=1, help='Number of OpenMP threads *per MPI process*')
 @click.option('--mpi', multiple=True, default=['basic'], help='Devito MPI mode(s)')
 @click.option('--arch', default='unknown', help='Test-bed architecture')
 @click.option('-r', '--resultsdir', default='results', help='Results directory')
-@click.option('--load', multiple=True, default=[], help='Modules to be loaded')
 @click.option('--export', multiple=True, default=[], help='Env vars to be exported')
 def generate(**kwargs):
     join = lambda l: ' '.join('%d' % i for i in l)
@@ -31,18 +27,20 @@ def generate(**kwargs):
 
     args['home'] = os.path.dirname(os.path.dirname(devito.__file__))
 
-    args['load'] = '\n'.join('module load %s' % i for i in args['load'])
     args['export'] = '\n'.join('export %s' % i for i in args['export'])
 
     template_header = """\
 #!/bin/bash
 
-#PBS -lselect=%(nn)s:ncpus=%(ncpus)s:mem=120gb:mpiprocs=%(np)s:ompthreads=%(nt)s
-#PBS -lwalltime=02:00:00
+#rj queue=idle nodes=%(nn)s priority=900 logdir=logs mem=110G io=0 features=xeon
 
 lscpu
 
-%(load)s
+module load intel-composer/2019.0.117
+module load intel-rt/2019.0.117
+module load openmpi/3.0.0-mt
+
+module load miniconda  # otherwise "activate" won't work
 
 cd %(home)s
 
@@ -53,17 +51,22 @@ export DEVITO_ARCH=intel
 export DEVITO_OPENMP=1
 export DEVITO_LOGGING=DEBUG
 
+export OMP_NUM_THREADS=%(nt)s
+export OMP_PLACES=cores
+export OMP_PROC_BIND=close
+
 %(export)s
 
 cd benchmarks/user
 """  # noqa
     template_cmd = """\
-DEVITO_MPI=%(mpi)s mpiexec python benchmark.py bench -P %(problem)s -bm O2 -d %(shape)s -so %(space_order)s --tn %(tn)s -x 1 --arch %(arch)s -r %(resultsdir)s\
+DEVITO_MPI=%(mpi)s mpirun -np %(np)s --bind-to socket --report-bindings python benchmark.py bench -P %(problem)s -bm O2 -d %(shape)s -so %(space_order)s --tn %(tn)s -x 1 --arch %(arch)s -r %(resultsdir)s\
 """  # noqa
 
     # Generate one PBS file for each `np` value
     for nn in kwargs['nn']:
         args['nn'] = nn
+        args['np'] = str(int(nn)*2)
 
         cmds = []
         for i in kwargs['mpi']:
