@@ -825,4 +825,4 @@ def test_tti_v2_rewrite_aggressive_opcounts(space_order, expected):
 
 
 if __name__ == "__main__":
-    test_tti_v2_rewrite_aggressive_opcounts(4, 183)
+    test_tti_rewrite_aggressive_opcounts(16, 306)
