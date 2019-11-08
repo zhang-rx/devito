@@ -595,6 +595,9 @@ class IterationSpace(Space):
                 ret.extend([d for d in v if d not in ret])
         return IterationSpace(intervals, sub_iterators, directions)
 
+    def lift(self, d=None):
+        return IterationSpace(self.intervals.lift(d), self.sub_iterators, self.directions)
+
     def reset(self):
         return IterationSpace(self.intervals.reset(), self.sub_iterators, self.directions)
 

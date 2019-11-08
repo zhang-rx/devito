@@ -250,19 +250,6 @@ class Enforce(Queue):
                 # Try with increasingly smaller ClusterGroups until the ambiguity is gone
                 return self.callback(clusters[:-1], prefix, backlog, require_break)
 
-        # If the flow- or anti-dependences are not coupled, one or more Clusters
-        # might be scheduled separately, to increase parallelism (this is basically
-        # what low-level compilers call "loop fission")
-        for n, _ in enumerate(clusters):
-            d_cross = scope.d_from_access(scope.a_query(n, 'R')).cross()
-            if any(d.is_storage_volatile(candidates) for d in d_cross):
-                break
-            elif d_cross.cause & candidates:
-                if n > 0:
-                    return self.callback(clusters[:n], prefix, clusters[n:] + backlog,
-                                         (d_cross.cause & candidates) | known_break)
-                break
-
         # Compute iteration direction
         direction = {d: Backward for d in candidates if d.root in scope.d_anti.cause}
         direction.update({d: Forward for d in candidates if d not in direction})
@@ -296,6 +283,7 @@ def optimize(clusters, dse_mode):
     following transformations:
 
         * [cross-cluster] Fusion
+        * [cross-cluster] Fission
         * [intra-cluster] Several flop-reduction passes via the DSE
         * [cross-cluster] Lifting
         * [cross-cluster] Scalarization
@@ -307,6 +295,9 @@ def optimize(clusters, dse_mode):
 
     # Fusion
     clusters = fuse(clusters)
+
+    # Fission to increase parallelism
+    clusters = Fission().process(clusters)
 
     from devito.dse import rewrite
     clusters = rewrite(clusters, template, mode=dse_mode)
@@ -487,6 +478,57 @@ def eliminate_arrays(clusters, template):
         processed.append(c.rebuild(exprs))
 
     return processed
+
+
+class Fission(Queue):
+
+    """
+    Fission non-parallel Clusters to maximize parallelism.
+    """
+
+    def _fission(self, cluster, prefix):
+        # Consider fission along `candidates`
+        candidates = prefix[-1].dim._defines
+
+        for n in range(len(cluster.exprs) + 1):
+            accesses = cluster.scope.a_query(n, 'R')
+            d_cross = cluster.scope.d_from_access(accesses).cross()
+
+            if any(d.is_storage_volatile(candidates) for d in d_cross):
+                return cluster, None
+
+            if d_cross.cause & candidates:
+                if n > 0:
+                    fissioned = cluster.rebuild(cluster.exprs[:n])
+
+                    ispace = cluster.ispace.lift(candidates)
+                    dspace = cluster.dspace.lift(candidates)
+                    remainder = Cluster(cluster.exprs[n:], ispace, dspace)
+                    return fissioned, remainder
+                else:
+                    return cluster, None
+
+        return cluster, None
+
+    def callback(self, clusters, prefix):
+        if not prefix:
+            return clusters
+
+        if len(clusters) > 1:
+            # The `prefix` Dimensions are already shared by two or more
+            # Clusters, fissioning at this point makes no sense
+            return clusters
+        tip = clusters[0]
+
+        # Loop fission is illegal when there are lexically backward loop-carried
+        # data dependences
+
+        processed = []
+        while tip is not None:
+            cluster, tip = self._fission(tip, prefix)
+            processed.append(cluster)
+
+        return processed
 
 
 def guard(clusters):
