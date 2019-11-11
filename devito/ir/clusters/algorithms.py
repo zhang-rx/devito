@@ -5,7 +5,7 @@ import sympy
 
 from devito.ir.support import Any, Backward, Forward, IterationSpace, Scope
 from devito.ir.clusters.cluster import Cluster, ClusterGroup
-from devito.ir.clusters.processing import Queue
+from devito.ir.clusters.processing import Queue, QueueCG
 from devito.symbolics import CondEq, xreplace_indices
 from devito.tools import DAG, as_tuple, flatten, filter_ordered, generator
 from devito.types import Scalar
@@ -40,7 +40,7 @@ def clusterize(exprs, dse_mode=None):
     return ClusterGroup(clusters)
 
 
-class Toposort(Queue):
+class Toposort(QueueCG):
 
     """
     Topologically sort a sequence of Clusters.
@@ -49,16 +49,8 @@ class Toposort(Queue):
     Clusters with compatible IterationSpace, is used.
     """
 
-    def callback(self, cgroups, prefix):
-        cgroups = self._toposort(cgroups, prefix)
-        cgroups = self._aggregate(cgroups, prefix)
-        return cgroups
-
-    def process(self, clusters):
-        cgroups = [ClusterGroup(c, c.itintervals) for c in clusters]
-        cgroups = self._process_fdta(cgroups, 1)
-        clusters = ClusterGroup.concatenate(*cgroups)
-        return clusters
+    def _callback(self, cgroups, prefix):
+        return self._toposort(cgroups, prefix)
 
     def _toposort(self, cgroups, prefix):
         # Are there any ClusterGroups that could potentially be fused? If not,
@@ -93,12 +85,6 @@ class Toposort(Queue):
         processed = dag.topological_sort(choose_element)
 
         return processed
-
-    def _aggregate(self, cgroups, prefix):
-        """
-        Concatenate a sequence of ClusterGroups into a new ClusterGroup.
-        """
-        return [ClusterGroup(cgroups, prefix)]
 
     def _build_dag(self, cgroups, prefix):
         """
@@ -182,7 +168,7 @@ class Enforce(Queue):
     `t`, we need up-to-date information on the RHS".
     """
 
-    def callback(self, clusters, prefix, backlog=None, known_break=None):
+    def _callback(self, clusters, prefix, backlog=None, known_break=None):
         if not prefix:
             return clusters
 
@@ -212,7 +198,7 @@ class Enforce(Queue):
             if require_break:
                 backlog = [clusters[-1]] + backlog
                 # Try with increasingly smaller ClusterGroups until the ambiguity is gone
-                return self.callback(clusters[:-1], prefix, backlog, require_break)
+                return self._callback(clusters[:-1], prefix, backlog, require_break)
 
         # Compute iteration direction
         direction = {d: Backward for d in candidates if d.root in scope.d_anti.cause}
@@ -238,7 +224,7 @@ class Enforce(Queue):
             dspace = c.dspace.lift(known_break)
             backlog[i] = Cluster(c.exprs, ispace, dspace)
 
-        return processed + self.callback(backlog, prefix)
+        return processed + self._callback(backlog, prefix)
 
 
 def optimize(clusters, dse_mode):
@@ -293,7 +279,7 @@ class Lift(Queue):
     "loop-invariant code motion".
     """
 
-    def callback(self, clusters, prefix):
+    def _callback(self, clusters, prefix):
         if not prefix:
             # No iteration space to be lifted from
             return clusters
@@ -453,7 +439,7 @@ class Fission(Queue):
     def process(self, elements):
         return self._process_fatd(elements, 1)
 
-    def callback(self, clusters, prefix):
+    def _callback(self, clusters, prefix):
         if not prefix:
             return clusters
 

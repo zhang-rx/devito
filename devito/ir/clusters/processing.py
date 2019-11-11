@@ -1,6 +1,8 @@
 from itertools import groupby
 
-__all__ = ['Queue']
+from devito.ir.clusters.cluster import ClusterGroup
+
+__all__ = ['Queue', 'QueueCG']
 
 
 class Queue(object):
@@ -11,12 +13,15 @@ class Queue(object):
 
     Notes
     -----
-    Subclasses must override :meth:`callback`, which may get executed either
+    Subclasses must override :meth:`_callback`, which may get executed either
     before (fdta -- first divide then apply) or after (fatd -- first apply
     then divide) the divide phase of the algorithm.
     """
 
     def callback(self, *args):
+        return self._callback(*args)
+
+    def _callback(self, *args):
         raise NotImplementedError
 
     def process(self, elements):
@@ -60,3 +65,21 @@ class Queue(object):
                 processed.extend(self._process_fatd(_elements, level + 1))
 
         return processed
+
+
+class QueueCG(Queue):
+
+    """
+    A Queue operating on ClusterGroups, instead of Clusters.
+    """
+
+    def callback(self, cgroups, prefix):
+        cgroups = self._callback(cgroups, prefix)
+        cgroups = [ClusterGroup(cgroups, prefix)]
+        return cgroups
+
+    def process(self, clusters):
+        cgroups = [ClusterGroup(c, c.itintervals) for c in clusters]
+        cgroups = self._process_fdta(cgroups, 1)
+        clusters = ClusterGroup.concatenate(*cgroups)
+        return clusters
