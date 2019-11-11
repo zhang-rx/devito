@@ -255,6 +255,10 @@ def optimize(clusters, dse_mode):
     # Lifting
     clusters = Lift().process(clusters)
 
+    # Analyze TODO
+
+    # Reverse TODO
+
     # Lifting may create fusion opportunities
     clusters = fuse(clusters)
 
