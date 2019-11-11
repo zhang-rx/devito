@@ -510,6 +510,29 @@ class Fission(Queue):
     Fission non-parallel Clusters to maximize parallelism.
     """
 
+    def process(self, elements):
+        return self._process_fatd(elements, 1)
+
+    def callback(self, clusters, prefix):
+        if not prefix:
+            return clusters
+
+        if len(clusters) > 1:
+            # The `prefix` Dimensions are already shared by two or more
+            # Clusters, fissioning at this point makes no sense
+            return clusters
+        tip = clusters[0]
+
+        # Loop fission is illegal when there are lexically backward loop-carried
+        # data dependences
+
+        processed = []
+        while tip is not None:
+            cluster, tip = self._fission(tip, prefix)
+            processed.append(cluster)
+
+        return processed
+
     def _fission(self, cluster, prefix):
         # Consider fission along `candidates`
         candidates = prefix[-1].dim._defines
@@ -533,26 +556,6 @@ class Fission(Queue):
                     return cluster, None
 
         return cluster, None
-
-    def callback(self, clusters, prefix):
-        if not prefix:
-            return clusters
-
-        if len(clusters) > 1:
-            # The `prefix` Dimensions are already shared by two or more
-            # Clusters, fissioning at this point makes no sense
-            return clusters
-        tip = clusters[0]
-
-        # Loop fission is illegal when there are lexically backward loop-carried
-        # data dependences
-
-        processed = []
-        while tip is not None:
-            cluster, tip = self._fission(tip, prefix)
-            processed.append(cluster)
-
-        return processed
 
 
 def guard(clusters):
