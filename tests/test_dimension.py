@@ -144,6 +144,40 @@ class TestSubDimension(object):
                    for i in range(1, thickness + 1))
         assert np.all(u.data[0, thickness:-thickness, thickness:-thickness] == 1.)
 
+    def test_samedirection(self):
+        """
+        Tests application of an Operator consisting of multiple equations
+        defined over different sub-regions, explicitly created through the
+        use of SubDimensions.
+        """
+        grid = Grid(shape=(20,))
+        x, = grid.dimensions
+        t = grid.stepping_dim
+        thickness0 = 2
+        thickness1 = 4
+
+        u = TimeFunction(name='u', save=None, grid=grid, space_order=0, time_order=1)
+
+        xleftleft = SubDimension.leftleft(name='xleftleft', parent=x, thickness0=thickness0, thickness1=thickness1)
+       
+        xrightright = SubDimension.rightright(name='xrightright', parent=x, thickness0=thickness1, thickness1=thickness0)
+
+        leftbc = Eq(u[t+1, xleftleft], u[t, xleftleft] + 1)
+        rightbc = Eq(u[t+1, xrightright], u[t, xrightright] + 1)
+
+        op = Operator([leftbc, rightbc])
+
+        op.apply(time_m=1, time_M=1)
+
+        assert np.all(u.data[0, 0:thickness0] == 0.)
+        assert np.all(u.data[0, -thickness0:] == 0.)
+        
+        assert np.all(u.data[0, thickness1:-thickness1] == 0.)
+
+        assert np.all(u.data[0, thickness0:thickness1] == 1.)
+        assert np.all(u.data[0, -thickness0:-thickness1] == 1.)
+        
+
     @skipif('yask')
     def test_flow_detection_interior(self):
         """
