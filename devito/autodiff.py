@@ -3,87 +3,105 @@ from sympy import diff
 from devito.types import TimeFunction, Dimension
 from devito.ir.equations.equation import LoweredEq
 from devito.ir.support.space import (DataSpace, Interval, IntervalGroup,
-                                     IterationSpace, AbstractInterval)
+                                     IterationSpace, AbstractInterval, NullInterval)
 from devito.types.dimension import SubDimension
 
 def differentiate(expressions):
-    adjoint_mapper = {}
+    
     all_derivatives = []
     for e in expressions:
-        indexeds = retrieve_indexed(e.rhs, mode='all', deep=True)
-        adjoint_output_fn, adjoint_mapper = diff_indexed(e.lhs, adjoint_mapper)
-        
-        derivatives = []
-        for i in indexeds:
-            i_d, adjoint_mapper = diff_indexed(i, adjoint_mapper)
-            state = extract_le_state(e)
 
-            old_ds = state['dspace']
+        derivatives = differentiate_expression(e)
 
-            new_parts = {i_d.function: old_ds.parts[i.function]}
-            new_ds = DataSpace(old_ds.intervals, new_parts)
-            state['dspace'] = new_ds
+        derivatives = scatter_to_gather(derivatives)
 
-            d_eqn = LoweredEq(i_d, i_d+diff(e.rhs, i)*adjoint_output_fn, **state)
-            derivatives.append(d_eqn)
-
-        for i, d in enumerate(derivatives):
-            subs = {}
-            for e_ind, d_ind in zip(e.lhs.indices, d.lhs.indices):
-                ind = retrieve_dimension(d_ind).pop()
-                if ind.is_Time:
-                    continue
-                else:
-                    if (d_ind - e_ind) != 0:
-                        subs[ind] = e_ind - d_ind
-            derivatives[i] = shift_le_index(d, subs)
-
-        lhs_terms = set()
-
-        for d in derivatives:
-            lhs_terms.add(d.lhs)
-
-        assert(len(lhs_terms) == 1)
-
-        lhs_term = lhs_terms.pop()
+        ensure_single_lhs(derivatives)
 
         dim_index = 1
-        intervals = []
-        for d in derivatives:
-            intervals.append(d.ispace.intervals[dim_index])
+        intervals = [d.ispace.intervals[dim_index] for d in derivatives]
 
         intersection = IntervalGroup.generate('intersection', *[IntervalGroup(x) for x in intervals])
 
-        new_equations = [replace_interval(x, intersection[0]) for x in derivatives]
-
-        # r[i] = u[i-2]+u[i-1]+u[i]+u[i+1]
-
-        left_extent = abs(min([i.lower for i in intervals])) + 1
-        right_extent = abs(max([i.upper for i in intervals])) + 1
+        
         dim = retrieve_dimension(d.lhs.indices[dim_index]).pop()
-        left_remainder = SubDimension.left("%s_lr" % dim.name, dim, left_extent)
-        right_remainder = SubDimension.right("%s_rr" % dim.name, dim, right_extent)
 
-        # i = Interval(xl, -1, 1)
-
-        
-        
+        new_equations = []
         for d in derivatives:
-            pass
-            # left remainder interval
-            # remainder_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
-            # left remainder equation
-            # new_equation = 
-            # new_equations.append(replace_interval(d, remainder_interval))
-            # right remainder interval
-            # right remainder equation
+            left_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
+            if not left_interval.is_Null:
+                left_eq = replace_interval(d, left_interval)
+                new_equations.append(left_eq)
 
-        # derivatives = new_equations
+            middle_eq = replace_interval(d, intersection[0])
+            new_equations.append(middle_eq)
+            
+            right_interval = right_remainder(d.ispace.intervals[dim_index], intersection[0])
+            if not right_interval.is_Null:
+                right_eq = replace_interval(d, right_interval)
+                new_equations.append(right_eq)
+
+        derivatives = new_equations
 
         all_derivatives += derivatives
     return all_derivatives
 
+def left_remainder(i1, i2):
+    assert(i1.dim == i2.dim)
+    if not i1.lower < i2.lower:
+        return NullInterval(i1.dim)
+    
+    return Interval(i1.dim, i1.lower, i2.lower)
 
+
+def differentiate_expression(expression):
+    adjoint_mapper = {}
+    indexeds = retrieve_indexed(e.rhs, mode='all', deep=True)
+    adjoint_output_fn, adjoint_mapper = diff_indexed(e.lhs, adjoint_mapper)
+        
+    derivatives = []
+    for i in indexeds:
+        i_d, adjoint_mapper = diff_indexed(i, adjoint_mapper)
+        state = extract_le_state(e)
+
+        old_ds = state['dspace']
+
+        new_parts = {i_d.function: old_ds.parts[i.function]}
+        new_ds = DataSpace(old_ds.intervals, new_parts)
+        state['dspace'] = new_ds
+
+        d_eqn = LoweredEq(i_d, i_d+diff(e.rhs, i)*adjoint_output_fn, **state)
+        derivatives.append(d_eqn)
+    return derivatives
+
+def scatter_to_gather(derivatives):
+    new_derivatives = []
+    for i, d in enumerate(derivatives):
+        subs = {}
+        for e_ind, d_ind in zip(e.lhs.indices, d.lhs.indices):
+            ind = retrieve_dimension(d_ind).pop()
+            if ind.is_Time:
+                continue
+            else:
+                if (d_ind - e_ind) != 0:
+                    subs[ind] = e_ind - d_ind
+        new_derivatives.append(shift_le_index(d, subs))
+    return new_derivatives
+
+def right_remainder(i1, i2):
+    assert(i1.dim == i2.dim)
+    if not i1.upper > i2.upper:
+        return NullInterval(i1.dim)
+
+    return Interval(i1.dim, i2.upper, i1.upper)
+
+def ensure_single_lhs(derivatives):
+    lhs_terms = set()
+
+    for d in derivatives:
+        lhs_terms.add(d.lhs)
+
+    assert(len(lhs_terms) == 1)
+    
 def diff_function(func, existing_mapper):
     if func in existing_mapper:
         return existing_mapper[func], existing_mapper

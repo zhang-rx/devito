@@ -11,5 +11,4 @@ eq = Eq(u_i[t+1, x, y], 4*u_i[t, x, y] + 2*u_i[t, x-1, y] + 3*u_i[t, x+1, y])
 # eq2 = Eq(u.forward, u + 1)
 op = Operator(eq, adjoint=True)
 print("In the main program now")
-from IPython import embed
-embed()
+print(op)
