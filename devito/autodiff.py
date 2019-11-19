@@ -7,43 +7,61 @@ from devito.ir.support.space import (DataSpace, Interval, IntervalGroup,
 from devito.types.dimension import SubDimension
 
 def differentiate(expressions):
-    
     all_derivatives = []
     for e in expressions:
 
         derivatives = differentiate_expression(e)
 
-        derivatives = scatter_to_gather(derivatives)
-
-        ensure_single_lhs(derivatives)
+        derivatives = make_same_lhs(derivatives, e)
 
         dim_index = 1
         intervals = [d.ispace.intervals[dim_index] for d in derivatives]
 
         intersection = IntervalGroup.generate('intersection', *[IntervalGroup(x) for x in intervals])
-
-        
+        assert(not intersection[0].is_Null)
+        d = derivatives[0]
         dim = retrieve_dimension(d.lhs.indices[dim_index]).pop()
 
         new_equations = []
         for d in derivatives:
             left_interval = left_remainder(d.ispace.intervals[dim_index], intersection[0])
             if not left_interval.is_Null:
-                left_eq = replace_interval(d, left_interval)
+                left_eq = replace_dimension_left(d, dim, left_interval)
                 new_equations.append(left_eq)
-
-            middle_eq = replace_interval(d, intersection[0])
+                
+            middle_eq = replace_dimension_middle(d, dim, intersection[0])
             new_equations.append(middle_eq)
             
             right_interval = right_remainder(d.ispace.intervals[dim_index], intersection[0])
             if not right_interval.is_Null:
-                right_eq = replace_interval(d, right_interval)
+                right_eq = replace_dimension_right(d, dim, right_interval)
                 new_equations.append(right_eq)
 
         derivatives = new_equations
 
         all_derivatives += derivatives
     return all_derivatives
+
+def replace_dimension_left(expression, dim, interval):
+    return replace_dimension(expression, dim, interval, 'left')
+    
+def replace_dimension_middle(expression, dim, interval):
+    return replace_dimension(expression, dim, interval, 'middle')
+    
+def replace_dimension_right(expression, dim, interval):
+    return replace_dimension(expression, dim, interval, 'right')
+
+def replace_dimension(expression, dim, interval, direction):
+    assert(direction in ['left', 'right', 'middle'])
+    thickness0 = interval.lower
+    thickness1 = interval.upper
+    if direction=='left':
+        new_dim = SubDimension.leftleft(parent=dim, name="%s_left"%dim.name, thickness0=thickness0, thickness1=thickness1)
+    elif direction=='middle':
+        new_dim = SubDimension.middle(parent=dim, name="%s_middle"%dim.name, thickness_left=thickness0, thickness_right=thickness1)
+    else:
+        new_dim = SubDimension.rightright(parent=dim, name="%s_right"%dim.name, thickness0=thickness0, thickness1=thickness1)
+    return expression.subs({dim:new_dim})
 
 def left_remainder(i1, i2):
     assert(i1.dim == i2.dim)
@@ -53,7 +71,7 @@ def left_remainder(i1, i2):
     return Interval(i1.dim, i1.lower, i2.lower)
 
 
-def differentiate_expression(expression):
+def differentiate_expression(e):
     adjoint_mapper = {}
     indexeds = retrieve_indexed(e.rhs, mode='all', deep=True)
     adjoint_output_fn, adjoint_mapper = diff_indexed(e.lhs, adjoint_mapper)
@@ -73,11 +91,11 @@ def differentiate_expression(expression):
         derivatives.append(d_eqn)
     return derivatives
 
-def scatter_to_gather(derivatives):
+def make_same_lhs(derivatives, original_e):
     new_derivatives = []
     for i, d in enumerate(derivatives):
         subs = {}
-        for e_ind, d_ind in zip(e.lhs.indices, d.lhs.indices):
+        for e_ind, d_ind in zip(original_e.lhs.indices, d.lhs.indices):
             ind = retrieve_dimension(d_ind).pop()
             if ind.is_Time:
                 continue
@@ -85,6 +103,7 @@ def scatter_to_gather(derivatives):
                 if (d_ind - e_ind) != 0:
                     subs[ind] = e_ind - d_ind
         new_derivatives.append(shift_le_index(d, subs))
+    ensure_single_lhs(new_derivatives)
     return new_derivatives
 
 def right_remainder(i1, i2):
@@ -161,31 +180,3 @@ def q_dimension(expr):
 def retrieve_dimension(expr, mode='unique', deep=False):
     """Shorthand to retrieve the Dimensions in ``expr``."""
     return search(expr, q_dimension, mode, 'dfs', deep)
-
-
-def replace_interval(loweredeq, interval):
-    state = extract_le_state(loweredeq)
-
-    old_ds = state['dspace']
-    new_ds = DataSpace(replace_interval_group(old_ds.intervals, interval), old_ds.parts)
-
-    old_is = state['ispace']
-    new_is = IterationSpace(replace_interval_group(old_is.intervals, interval),
-                                old_is.sub_iterators, old_is.directions)
-
-    state['dspace'] = new_ds
-    state['ispace'] = new_is
-
-    return LoweredEq(loweredeq.lhs, loweredeq.rhs, **state)
-
-
-def replace_interval_group(intervalgroup, interval):
-    new_intervals = []
-
-    for i in intervalgroup:
-        if i.dim == interval.dim:
-            new_intervals.append(interval)
-        else:
-            new_intervals.append(i)
-
-    return IntervalGroup(new_intervals)
