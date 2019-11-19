@@ -519,12 +519,30 @@ class SubDimension(DerivedDimension):
                    local=local)
 
     @classmethod
+    def leftleft(cls, name, parent, thickness0, thickness1, local=True):
+        lst, rst = cls._symbolic_thickness(name)
+        return cls(name, parent,
+                   left=parent.symbolic_min+lst,
+                   right=parent.symbolic_min+rst-1,
+                   thickness=((lst, thickness0), (rst, thickness1)),
+                   local=local)
+
+    @classmethod
     def right(cls, name, parent, thickness, local=True):
         lst, rst = cls._symbolic_thickness(name)
         return cls(name, parent,
                    left=parent.symbolic_max-rst+1,
                    right=parent.symbolic_max,
                    thickness=((lst, 0), (rst, thickness)),
+                   local=local)
+
+    @classmethod
+    def rightright(cls, name, parent, thickness0, thickness1, local=True):
+        lst, rst = cls._symbolic_thickness(name)
+        return cls(name, parent,
+                   left=parent.symbolic_max-lst+1,
+                   right=parent.symbolic_max-rst,
+                   thickness=((lst, thickness0), (rst, thickness1)),
                    local=local)
 
     @classmethod
