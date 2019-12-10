@@ -153,20 +153,16 @@ class Operator(Callable):
         expressions = [indexify(i) for i in expressions]
         expressions = cls._apply_substitutions(expressions, subs)
         expressions = cls._specialize_exprs(expressions)
-        from IPython import embed; embed()
 
         # Group expressions based on their iteration space and data dependences
         # Several optimizations are applied (fusion, lifting, flop reduction via DSE, ...)
         clusters = clusterize(expressions, dse_mode=set_dse_mode(dse))
-        from IPython import embed; embed()
 
         # Lower Clusters to a Schedule tree
         stree = st_build(clusters)
-        from IPython import embed; embed()
 
         # Lower Schedule tree to an Iteration/Expression tree (IET)
         iet = iet_build(stree)
-        from IPython import embed; embed()
 
         # Instrument the IET for C-level profiling
         profiler = create_profile('timers')
