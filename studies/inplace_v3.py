@@ -58,15 +58,12 @@ class InPlaceOperator(Operator):
         # building list of subdimensions
         t = expr_in.lhs.function.time_dim
         t_length = t.extreme_max - t.extreme_min
-        from IPython import embed; embed()
         t0 = SubDimension.left(name='t1', parent=t, thickness=1)
-        print(t0.symbolic_size)
         t1 = SubDimension.middle(name='t2', parent=t, thickness_left=1, thickness_right=t_length-2)
         t2 = SubDimension.middle(name='t3', parent=t, thickness_left=2, thickness_right=2)
         t3 = SubDimension.middle(name='t4', parent=t, thickness_left=t_length-2, thickness_right=1)
         t4 = SubDimension.right(name='t5', parent=t, thickness=1)
         
-        # from IPython import embed; embed()
         # applying subdimensions
         exprs_out[0] = exprs_out[0].subs(t,t0)
         exprs_out[1] = exprs_out[1].subs(t,t1)
