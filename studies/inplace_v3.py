@@ -20,13 +20,14 @@ class InPlaceOperator(Operator):
 
     def _specialize_exprs(self, expressions):
 
-        # building symbols to hold input data
-        in1 = Symbol(name='in1')
-        in2 = Symbol(name='in2')
-
-        # building functions to hold output data
         expr_in = expressions[0]
         grid_in = expr_in.lhs.function.grid
+
+        # building symbols to hold input data
+        in1 = Function(name='in1', grid=grid_in)
+        in2 = Function(name='in2', grid=grid_in)
+
+        # building functions to hold output data
         out1 = Function(name='out1', grid=grid_in)
         out2 = Function(name='out2', grid=grid_in)
 
