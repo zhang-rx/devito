@@ -54,22 +54,38 @@ class InPlaceOperator(Operator):
             tmp_expr = tmp_expr.xreplace(mapping[i])
             exprs_out.append(tmp_expr)
 
-
         # building list of subdimensions
         t = expr_in.lhs.function.time_dim
         t_length = t.extreme_max - t.extreme_min
-        t0 = SubDimension.left(name='t1', parent=t, thickness=1)
-        t1 = SubDimension.middle(name='t2', parent=t, thickness_left=1, thickness_right=t_length-2)
-        t2 = SubDimension.middle(name='t3', parent=t, thickness_left=2, thickness_right=2)
-        t3 = SubDimension.middle(name='t4', parent=t, thickness_left=t_length-2, thickness_right=1)
-        t4 = SubDimension.right(name='t5', parent=t, thickness=1)
-        
+        thickness0 = 1
+        thickness1 = 2
+        # from IPython import embed; embed()
+        t0 = SubDimension.left(name='t0',
+                               parent=t,
+                               thickness=thickness0)
+        t1 = SubDimension.middle(name='t1',
+                               parent=t,
+                               thickness_left=thickness0,
+                               thickness_right=t_length-thickness1)
+        t2 = SubDimension.middle(name='t2',
+                               parent=t,
+                               thickness_left=thickness1,
+                               thickness_right=thickness1)
+        t3 = SubDimension.middle(name='t3',
+                               parent=t,
+                               thickness_left=t_length-thickness1,
+                               thickness_right=thickness0)
+        t4 = SubDimension.right(name='t4',
+                               parent=t,
+                               thickness=thickness0)
+
+
         # applying subdimensions
         exprs_out[0] = exprs_out[0].subs(t,t0)
         exprs_out[1] = exprs_out[1].subs(t,t1)
-        exprs_out[2] = exprs_out[2].subs(t,t2) # this one will cause fail!
-        # exprs_out[3] = exprs_out[3].subs(t,t3)
-        # exprs_out[4] = exprs_out[4].subs(t,t4)
+        exprs_out[2] = exprs_out[2].subs(t,t2)
+        exprs_out[3] = exprs_out[3].subs(t,t3)
+        exprs_out[4] = exprs_out[4].subs(t,t4)
 
         # debuggin
         for i in range(5):        
@@ -81,9 +97,9 @@ class InPlaceOperator(Operator):
 ## Interface
 
 shape=(10,10)
-space_order=2
+space_order=0
 time_order=2
-save=2
+save=1
 numpy_array, devito_grid = generate_data(shape=shape, 
                                          space_order=space_order, 
                                          save=save)
@@ -99,4 +115,4 @@ f1 = TimeFunction(name='f1',
 equation = Eq(f1.forward, f1 + f1.backward + 1)
 operator = InPlaceOperator(equation, time_m=0, time_M=9)
 
-# print(operator)
+print(operator)

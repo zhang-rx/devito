@@ -36,3 +36,15 @@ def generate_data(shape, space_order=0, save=1):
 
 def external_initializer(x):
     return None
+
+
+# alternative form for
+# building list of subdimensions
+# t = expr_in.lhs.function.time_dim
+# thickness0 = 1
+# thickness1 = 2
+# t0 = SubDimension.left(name='t0', parent=t, thickness=1)
+# t1 = SubDimension.leftleft(name='t1', parent=t, thickness0=thickness0, thickness1=thickness1)
+# t2 = SubDimension.middle(name='t2', parent=t, thickness_left=2, thickness_right=2)
+# t3 = SubDimension.rightright(name='t3', parent=t, thickness0=thickness1, thickness1=thickness0)
+# t4 = SubDimension.right(name='t4', parent=t, thickness=1)
