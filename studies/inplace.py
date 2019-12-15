@@ -1,34 +1,25 @@
-from devito import TimeFunction, Eq, SubDimension, Function
-from devito.data.allocators import ExternalAllocator
+from devito import Function, SubDimension
 from devito.operator import Operator
 from devito.tools import flatten
-from utils import generate_data, external_initializer
 
-
-def _func_args(equation):
-    """
-    Retrieve all Functions from a given equation.
-    """
-    if equation.is_Function:
-        return equation
-    elif equation.is_Equality:
-        return [_func_args(equation.lhs),
-                _func_args(equation.rhs)]
-    elif equation.is_Add:
-        return [_func_args(i) for i in equation.args if not(i.is_Number)]
+from studies.utils import func_args
 
 
 class InPlaceOperator(Operator):
+    """
+    Note:
+    It is tailored for time_order = 2.
+    """
 
     def __init__(self, *args, **kwargs):
 
         eq_in = args[0]                      # Input Equation
-        symb = flatten(_func_args(args[0]))  # Retrieving all Functions
+        symb = flatten(func_args(args[0]))   # Retrieving all Functions
         grid_in = symb[0].grid               # Grid info
 
-        # Building functions to hold input/output data
-        in1 = Function(name='in1', grid=grid_in)
+        # Building Functions to hold input/output data
         in2 = Function(name='in2', grid=grid_in)
+        in1 = Function(name='in1', grid=grid_in)
         out1 = Function(name='out1', grid=grid_in)
         out2 = Function(name='out2', grid=grid_in)
 
@@ -85,27 +76,3 @@ class InPlaceOperator(Operator):
             eqs_out[i] = eqs_out[i].subs(t, ti[i])
 
         super(InPlaceOperator, self).__init__(tuple(eqs_out), **kwargs)
-
-
-# Interface
-
-shape = (10, 10)
-space_order = 0
-time_order = 2
-save = 1
-numpy_array, devito_grid = generate_data(shape=shape,
-                                         space_order=space_order,
-                                         save=save)
-
-f1 = TimeFunction(name='f1',
-                  grid=devito_grid,
-                  space_order=space_order,
-                  allocator=ExternalAllocator(numpy_array),
-                  initializer=external_initializer,
-                  time_order=time_order,
-                  save=save)
-
-equation = Eq(f1.forward, f1 + f1.backward + 1)
-operator = InPlaceOperator(equation, time_m=0, time_M=9)
-
-print(operator)
