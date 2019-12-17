@@ -10,7 +10,7 @@ from devito.exceptions import InvalidOperator
 from devito.finite_differences import Eq
 from devito.logger import info, perf, warning, is_log_enabled_for
 from devito.ir.equations import LoweredEq
-from devito.ir.clusters import clusterize
+from devito.ir.clusters import clusterize, guard
 from devito.ir.iet import Callable, MetaCall, iet_build, derive_parameters
 from devito.ir.stree import stree_build
 from devito.operator.registry import operator_selector
@@ -319,9 +319,13 @@ class Operator(Callable):
             * Optimize Clusters for performance (flops, data locality, ...);
             * Introduce guards for conditional Clusters
         """
-        clusters = clusterize(expressions, dse_mode=kwargs['dse'])
+        # Build a sequence of Clusters from a sequence of Eqs
+        clusters = clusterize(expressions)
 
-        clusters = cls._specialize_clusters(clusters)
+        clusters = cls._specialize_clusters(clusters, **kwargs)
+
+        # Handle ConditionalDimensions
+        clusters = guard(clusters)
 
         return clusters
 
@@ -344,6 +348,7 @@ class Operator(Callable):
             * Derive and attach metadata for distributed-memory parallelism;
             * Derive sections for performance profiling
         """
+        # Build a ScheduleTree from a sequence of Clusters
         stree = stree_build(clusters)
 
         stree = cls._specialize_stree(stree)
@@ -372,6 +377,7 @@ class Operator(Callable):
         """
         name = kwargs.get("name", "Kernel")
 
+        # Build an IET from a ScheduleTree
         iet = iet_build(stree)
 
         # Instrument the IET for C-level profiling
