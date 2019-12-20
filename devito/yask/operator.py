@@ -16,7 +16,7 @@ from devito.operator import Operator
 from devito.passes.clusters import Lift, fuse, scalarize, eliminate_arrays, rewrite
 from devito.passes.iet import (DataManager, Ompizer, avoid_denormals, loop_wrapping,
                                iet_pass)
-from devito.tools import Signer, as_tuple, filter_ordered, flatten, generator
+from devito.tools import Signer, as_tuple, filter_ordered, flatten, generator, timed_pass
 
 from devito.yask import configuration
 from devito.yask.data import DataScalar
@@ -119,6 +119,7 @@ class YASKOmpizer(Ompizer):
 class YASKNoopOperator(Operator):
 
     @classmethod
+    @timed_pass(name='specializing.IET')
     def _specialize_iet(cls, graph, **kwargs):
         # Symbol definitions
         data_manager = DataManager()
@@ -169,6 +170,7 @@ class YASKOperator(Operator):
                 for e in expressions]
 
     @classmethod
+    @timed_pass(name='specializing.Clusters')
     def _specialize_clusters(cls, clusters, **kwargs):
         # TODO: this is currently identical to CPU64NoopOperator._specialize_clusters,
         # but it will have to change
@@ -196,6 +198,7 @@ class YASKOperator(Operator):
         return clusters
 
     @classmethod
+    @timed_pass(name='specializing.IET')
     def _specialize_iet(cls, graph, **kwargs):
         """
         Transform the Iteration/Expression tree to offload the computation of
