@@ -370,7 +370,7 @@ class IntervalGroup(PartialOrderTuple):
             else:
                 intervals.append(i)
 
-        relations = []
+        relations = [dims]
         for r in self.relations:
             relation = []
             for i in r:
