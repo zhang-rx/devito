@@ -255,6 +255,13 @@ class TimedAccess(IterationInstance):
     def is_local(self):
         return self.function.is_Symbol
 
+    @property
+    def is_regular(self):
+        #TODO: Add in ispace (intervals) check -- the order of the ispace
+        # Dimensions should match the order of the findices (aside from the
+        # reduction dimensions; IOW, the partial orders should be compatible!)
+        return super(TimedAccess, self).is_regular
+
     def __lt__(self, other):
         if not isinstance(other, TimedAccess):
             raise TypeError("Cannot compare with object of type %s" % type(other))
