@@ -3,8 +3,8 @@ from functools import partial
 from devito.core.operator import OperatorCore
 from devito.exceptions import InvalidOperator
 from devito.ir.clusters import Toposort
-from devito.passes.clusters import (Blocking, Lift, fuse, scalarize, eliminate_arrays,
-                                    rewrite)
+from devito.passes.clusters import (Blocking, Interchange, Lift, fuse, scalarize,
+                                    eliminate_arrays, rewrite)
 from devito.passes.iet import (DataManager, Ompizer, avoid_denormals, optimize_halospots,
                                mpiize, loop_wrapping, hoist_prodders)
 from devito.tools import as_tuple, generator, timed_pass
@@ -37,10 +37,13 @@ class CPU64NoopOperator(OperatorCore):
         clusters = Toposort().process(clusters)
         clusters = fuse(clusters)
 
-        # Blocking
+        # Blocking to improve data locality
         inner = options['blockinner']
         levels = options['blocklevels'] or cls.BLOCK_LEVELS
         clusters = Blocking(inner, levels).process(clusters)
+
+        # Interchange to maximize collapsing and minimize synchronization points
+        clusters = Interchange().process(clusters)
 
         # Flop reduction via the DSE
         clusters = rewrite(clusters, template, **kwargs)

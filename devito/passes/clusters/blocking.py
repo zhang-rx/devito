@@ -64,8 +64,6 @@ class Blocking(Queue):
             properties[i] = properties[d] - {TILABLE}
         properties.pop(d)
 
-        from IPython import embed; embed()
-
         #TODO: DataSpace ??
 
         return cluster.rebuild(ispace=ispace, properties=properties)
