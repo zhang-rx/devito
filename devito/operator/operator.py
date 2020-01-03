@@ -372,7 +372,7 @@ class Operator(Callable):
         name = kwargs.get("name", "Kernel")
 
         # Build an IET from a ScheduleTree
-        iet = iet_build(stree)
+        iet, efuncs = iet_build(stree)
 
         # Instrument the IET for C-level profiling
         iet = profiler.instrument(iet)
@@ -382,7 +382,7 @@ class Operator(Callable):
         iet = Callable(name, iet, 'int', parameters, ())
 
         # Lower IET to a target-specific IET
-        graph = Graph(iet)
+        graph = Graph(iet, *efuncs)
         graph = cls._specialize_iet(graph, **kwargs)
 
         return graph.root, graph
