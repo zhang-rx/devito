@@ -132,6 +132,10 @@ class Cluster(object):
         return set().union(*[e.free_symbols for e in self.exprs])
 
     @cached_property
+    def dimensions(self):
+        return set().union(*[i._defines for i in self.ispace.dimensions])
+
+    @cached_property
     def used_dimensions(self):
         """
         The Dimensions that *actually* appear among the expressions in ``self``.
