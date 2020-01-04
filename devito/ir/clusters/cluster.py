@@ -43,8 +43,11 @@ class Cluster(object):
         self._ispace = ispace
         self._dspace = dspace
         self._guards = frozendict(guards or {})
-        self._properties = frozendict(properties or {})
         self._halo_scheme = halo_scheme
+
+        properties = dict(properties or {})
+        properties.update({i.dim: properties.get(i.dim, set()) for i in ispace.intervals})
+        self._properties = frozendict(properties)
 
     def __repr__(self):
         return "Cluster([%s])" % ('\n' + ' '*9).join('%s' % i for i in self.exprs)
