@@ -202,6 +202,9 @@ def process(candidates, aliases, cluster, template, platform):
         # Build up the expression evaluating `alias`
         access = tuple(i.dim - i.lower for i in writeto)
         expression = Eq(array[access], origin.xreplace(subs))
+        if cluster.exprs[-1].lhs.name == 'v' and len(cluster.exprs) > 27:
+            if str(origin) == "-0.0500000007*v[t, x + 4, y + 3, z + 4] + 0.0500000007*v[t, x + 4, y + 5, z + 4]":
+                from IPython import embed; embed()
 
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
