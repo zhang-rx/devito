@@ -9,7 +9,7 @@ import ctypes
 from devito.exceptions import InvalidOperator
 from devito.logger import info, perf, warning, is_log_enabled_for
 from devito.ir.equations import LoweredEq
-from devito.ir.clusters import ClusterGroup, clusterize
+from devito.ir.clusters import clusterize, freeze, guard
 from devito.ir.iet import (Callable, MetaCall, derive_parameters, iet_build,
                            iet_analyze, iet_lower_dims)
 from devito.ir.stree import stree_build
@@ -18,7 +18,7 @@ from devito.operator.profiling import create_profile
 from devito.mpi import MPI
 from devito.parameters import configuration
 from devito.passes import Graph
-from devito.symbolics import indexify
+from devito.symbolics import estimate_cost, indexify
 from devito.tools import (DAG, Signer, ReducerMap, as_tuple, flatten, filter_ordered,
                           filter_sorted, split, timed_pass, timed_region, Evaluable)
 from devito.types import Dimension, Eq
@@ -249,8 +249,7 @@ class Operator(Callable):
 
     @classmethod
     def _initialize_state(cls, **kwargs):
-        return {'optimizations': {k: kwargs.get(k, configuration[k])
-                                  for k in ('dse', 'dle')}}
+        return {'optimizations': kwargs.get('dle', configuration['dle'])}
 
     @classmethod
     def _apply_substitutions(cls, expressions, subs):
@@ -320,9 +319,23 @@ class Operator(Callable):
         # Build a sequence of Clusters from a sequence of Eqs
         clusters = clusterize(expressions)
 
-        clusters = cls._specialize_clusters(clusters, profiler=profiler, **kwargs)
+        # Operation count before specialization
+        init_ops = sum(estimate_cost(c.exprs) for c in clusters if c.is_dense)
 
-        return ClusterGroup(clusters)
+        clusters = cls._specialize_clusters(clusters, **kwargs)
+
+        # Make sure subsequent symbolic manipulations won't unpick the specialization
+        # passes just performed
+        clusters = freeze(clusters)
+
+        # Handle ConditionalDimensions
+        clusters = guard(clusters)
+
+        # Operation count after specialization
+        final_ops = sum(estimate_cost(c.exprs) for c in clusters if c.is_dense)
+        profiler.record_ops_variation(init_ops, final_ops)
+
+        return clusters
 
     # Compilation -- ScheduleTree level
 
@@ -915,21 +928,8 @@ def parse_kwargs(**kwargs):
         mode = tuple(i for i in ['mpi', 'openmp'] if options[i]) or 'noop'
     kwargs['mode'] = mode
 
-    # `dse`
-    dse = kwargs.pop("dse", configuration['dse'])
-
-    if not dse:
-        kwargs['dse'] = 'noop'
-    elif isinstance(dse, str):
-        kwargs['dse'] = dse
-    else:
-        try:
-            kwargs['dse'] = ','.join(dse)
-        except:
-            raise InvalidOperator("Illegal `dse=%s`" % str(dse))
-
-    # Attach `platform` too for convenience, so we don't need `configuration` in
-    # most compilation passes
+    # Attach `platform` too for convenience, so that we don't need `configuration`
+    # during compilation
     kwargs['platform'] = configuration['platform']
 
     return kwargs
