@@ -4,7 +4,8 @@ from devito.core.operator import OperatorCore
 from devito.data import FULL
 from devito.ir.clusters import Toposort
 from devito.ir.support import COLLAPSED
-from devito.passes.clusters import Lift, fuse, scalarize, eliminate_arrays, rewrite
+from devito.passes.clusters import (Lift, cse, factorize, fuse, scalarize,
+                                    eliminate_arrays, optimize_pows)
 from devito.passes import (DataManager, Ompizer, ParallelTree, optimize_halospots,
                            mpiize, hoist_prodders)
 from devito.tools import generator, timed_pass
@@ -147,8 +148,10 @@ class DeviceOffloadingOperator(OperatorCore):
         clusters = Toposort().process(clusters)
         clusters = fuse(clusters)
 
-        # Flop reduction via the DSE
-        clusters = rewrite(clusters, template, **kwargs)
+        # Reduce flops
+        clusters = factorize(clusters)
+        clusters = cse(clusters, template)
+        clusters = optimize_pows(clusters)
 
         # Lifting
         clusters = Lift().process(clusters)
