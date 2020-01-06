@@ -10,7 +10,7 @@ from devito.ir import (ROUNDABLE, DataSpace, IterationInstance, IterationSpace,
 from devito.logger import perf_adv
 from devito.passes.clusters.utils import dse_pass, make_is_time_invariant
 from devito.symbolics import estimate_cost, retrieve_indexed
-from devito.types import Array
+from devito.types import Array, IncrDimension
 
 __all__ = ['cire']
 
@@ -37,17 +37,25 @@ def cire(cluster, template, platform):
 
     Examples
     --------
-    1) temp = (a[x,y,z]+b[x,y,z])*c[t,x,y,z]
-       >>>
-       ti[x,y,z] = a[x,y,z] + b[x,y,z]
-       temp = ti[x,y,z]*c[t,x,y,z]
+    1) expensive t-invariant sub-expression
 
-    2) temp1 = 2.0*a[x,y,z]*b[x,y,z]
-       temp2 = 3.0*a[x,y,z+1]*b[x,y,z+1]
-       >>>
-       ti[x,y,z] = a[x,y,z]*b[x,y,z]
-       temp1 = 2.0*ti[x,y,z]
-       temp2 = 3.0*ti[x,y,z+1]
+    t0 = (cos(a[x,y,z])*sin(b[x,y,z]))*c[t,x,y,z]
+
+    becomes
+
+    t1[x,y,z] = cos(a[x,y,z])*sin(b[x,y,z])
+    t0 = t1[x,y,z]*c[t,x,y,z]
+
+    2) Redundant sub-expressions
+
+    t0 = 2.0*a[x,y,z]*b[x,y,z]
+    t1 = 3.0*a[x,y,z+1]*b[x,y,z+1]
+
+    becomes
+
+    t2[x,y,z] = a[x,y,z]*b[x,y,z]
+    t0 = 2.0*t2[x,y,z]
+    t1 = 3.0*t2[x,y,z+1]
     """
     exprs = cluster.exprs
 
@@ -58,12 +66,9 @@ def cire(cluster, template, platform):
     candidates, processed = extract(exprs, aliases)
 
     # Create Aliases from aliasing expressions and assign them to Clusters
-    clusters, subs = process(candidates, aliases, cluster, template, platform)
+    clusters = process(cluster, candidates, processed, aliases, template, platform)
 
-    # Make sure to access the newly created tensor temporaries where necessary
-    processed = [e.xreplace(subs) for e in processed]
-
-    return clusters + [cluster.rebuild(processed)]
+    return clusters
 
 
 def collect(exprs):
@@ -93,7 +98,7 @@ def collect(exprs):
         * a[i+1] + b[j+1] : because at least one index differs
         * a[i] + c[i] : because at least one of the operands differs
         * a[i+2] - b[i+2] : because at least one operation differs
-        * a[i+2] + b[i] : because distance along ``i`` differ (+2 and +0)
+        * a[i+2] + b[i] : because the distances along ``i`` differ (+2 and +0)
     """
     # Determine the potential aliases
     candidates = []
@@ -168,19 +173,20 @@ def extract(exprs, aliases):
     return candidates, processed
 
 
-def process(candidates, aliases, cluster, template, platform):
+def process(cluster, candidates, processed, aliases, template, platform):
     """
     Create Clusters from aliasing expressions.
     """
     clusters = []
     subs = {}
+    mapper = {}
     for origin, alias in aliases.items():
         if all(i not in candidates for i in alias.aliased):
             continue
 
         # The write-to Intervals
         writeto = [Interval(i.dim, *alias.relaxed_diameter.get(i.dim, (0, 0)))
-                   for i in cluster.ispace.intervals if not i.dim.is_Time]
+                   for i in cluster.ispace.intervals]
         writeto = IntervalGroup(writeto)
 
         # Optimization: no need to retain a SpaceDimension if it does not
@@ -191,31 +197,35 @@ def process(candidates, aliases, cluster, template, platform):
             index = writeto.index(dep_inducing[0])
             writeto = IntervalGroup(writeto[index:])
         except IndexError:
+            #TODO: ending up too often here
             perf_adv("Couldn't optimize some of the detected redundancies")
 
-        # Create a temporary to store `alias`
-        dimensions = [d.root for d in writeto.dimensions]
-        halo = [(abs(i.lower), abs(i.upper)) for i in writeto]
-        array = Array(name=template(), dimensions=dimensions, halo=halo,
-                      dtype=cluster.dtype)
+        # IncrDimensions, if present, must be substituted with other IncrDimensions
+        # starting at 0
+        for d in writeto.dimensions:
+            if d.is_Incr and d not in mapper:
+                mapper[d] = IncrDimension(d, 0, d.symbolic_size - 1, 1, "%ss" % d.name)
 
-        # Build up the expression evaluating `alias`
-        access = tuple(i.dim - i.lower for i in writeto)
-        expression = Eq(array[access], origin.xreplace(subs))
+        # Create a temporary to store `alias`
+        array = Array(name=template(), dtype=cluster.dtype,
+                      dimensions=tuple(mapper.get(d, d) for d in writeto.dimensions),
+                      halo=[(abs(i.lower), abs(i.upper)) for i in writeto])
+
+        # The expression computing `alias`
+        expression = Eq(array.indexify(), origin.xreplace(subs))
 
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
         for aliased, distance in alias.with_distance:
             assert all(i.dim in distance.labels for i in writeto)
-            access = [i.dim - i.lower + distance[i.dim] for i in writeto]
+            indices = [mapper.get(i.dim, i.dim)-i.lower+distance[i.dim] for i in writeto]
             if aliased in candidates:
                 # It would *not* be in `candidates` if part of a composite alias
-                subs[candidates[aliased]] = array[access]
-            subs[aliased] = array[access]
+                subs[candidates[aliased]] = array[indices]
+            subs[aliased] = array[indices]
 
         # Construct the `alias` IterationSpace
-        intervals, sub_iterators, directions = cluster.ispace.args
-        ispace = IterationSpace(intervals.add(writeto), sub_iterators, directions)
+        ispace = cluster.ispace.add(writeto).augment(mapper)
 
         # Optimize the `alias` IterationSpace: if possible, the innermost
         # IterationInterval is rounded up to a multiple of the vector length
@@ -228,15 +238,20 @@ def process(candidates, aliases, cluster, template, platform):
             pass
 
         # Construct the `alias` DataSpace
-        mapper = detect_accesses(expression)
+        accesses = detect_accesses(expression)
         parts = {k: IntervalGroup(build_intervals(v)).add(ispace.intervals)
-                 for k, v in mapper.items() if k}
+                 for k, v in accesses.items() if k}
         dspace = DataSpace(cluster.dspace.intervals, parts)
 
         # Create a new Cluster for `alias`
         clusters.append(cluster.rebuild(exprs=[expression], ispace=ispace, dspace=dspace))
 
-    return clusters, subs
+    # Rebuild `cluster`
+    processed = [e.xreplace(subs) for e in processed]
+    ispace = cluster.ispace.augment(mapper)
+    rebuilt = cluster.rebuild(exprs=processed, ispace=ispace)
+
+    return clusters + [rebuilt]
 
 
 # Helpers
