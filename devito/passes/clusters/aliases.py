@@ -10,7 +10,7 @@ from devito.ir import (ROUNDABLE, DataSpace, IterationInstance, IterationSpace,
 from devito.logger import perf_adv
 from devito.passes.clusters.utils import dse_pass, make_is_time_invariant
 from devito.symbolics import estimate_cost, retrieve_indexed
-from devito.types import Array
+from devito.types import Array, IncrDimension
 
 __all__ = ['cire']
 
@@ -37,17 +37,25 @@ def cire(cluster, template, platform):
 
     Examples
     --------
-    1) temp = (a[x,y,z]+b[x,y,z])*c[t,x,y,z]
-       >>>
-       ti[x,y,z] = a[x,y,z] + b[x,y,z]
-       temp = ti[x,y,z]*c[t,x,y,z]
+    1) expensive t-invariant sub-expression
 
-    2) temp1 = 2.0*a[x,y,z]*b[x,y,z]
-       temp2 = 3.0*a[x,y,z+1]*b[x,y,z+1]
-       >>>
-       ti[x,y,z] = a[x,y,z]*b[x,y,z]
-       temp1 = 2.0*ti[x,y,z]
-       temp2 = 3.0*ti[x,y,z+1]
+    t0 = (cos(a[x,y,z])*sin(b[x,y,z]))*c[t,x,y,z]
+
+    becomes
+
+    t1[x,y,z] = cos(a[x,y,z])*sin(b[x,y,z])
+    t0 = t1[x,y,z]*c[t,x,y,z]
+
+    2) Redundant sub-expressions
+
+    t0 = 2.0*a[x,y,z]*b[x,y,z]
+    t1 = 3.0*a[x,y,z+1]*b[x,y,z+1]
+
+    becomes
+
+    t2[x,y,z] = a[x,y,z]*b[x,y,z]
+    t0 = 2.0*t2[x,y,z]
+    t1 = 3.0*t2[x,y,z+1]
     """
     exprs = cluster.exprs
 
@@ -93,7 +101,7 @@ def collect(exprs):
         * a[i+1] + b[j+1] : because at least one index differs
         * a[i] + c[i] : because at least one of the operands differs
         * a[i+2] - b[i+2] : because at least one operation differs
-        * a[i+2] + b[i] : because distance along ``i`` differ (+2 and +0)
+        * a[i+2] + b[i] : because the distances along ``i`` differ (+2 and +0)
     """
     # Determine the potential aliases
     candidates = []
@@ -174,6 +182,7 @@ def process(candidates, aliases, cluster, template, platform):
     """
     clusters = []
     subs = {}
+    index_mapper = {}
     for origin, alias in aliases.items():
         if all(i not in candidates for i in alias.aliased):
             continue
@@ -194,10 +203,21 @@ def process(candidates, aliases, cluster, template, platform):
             perf_adv("Couldn't optimize some of the detected redundancies")
 
         # Create a temporary to store `alias`
-        dimensions = [d.root for d in writeto.dimensions]
-        halo = [(abs(i.lower), abs(i.upper)) for i in writeto]
-        array = Array(name=template(), dimensions=dimensions, halo=halo,
-                      dtype=cluster.dtype)
+        #TODO: was `dimensions = [d.root for d in writeto.dimensions]`
+        array = Array(name=template(), dimensions=writeto.dimensions, dtype=cluster.dtype,
+                      halo=[(abs(i.lower), abs(i.upper)) for i in writeto])
+
+        # Create the access indices for `alias`
+        indices = []
+        for d in writeto.dimensions:
+            if d.is_Incr:
+                if d in index_mapper:
+                    indices.append(index_mapper[d])
+                else:
+                    index_mapper[d] = IncrDimension()
+            else:
+                indices.append(d)
+        indices = [IncrDimension(name='%sl' % d.name) if d.]
 
         # Build up the expression evaluating `alias`
         access = tuple(i.dim - i.lower for i in writeto)
