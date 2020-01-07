@@ -920,7 +920,10 @@ class IncrDimension(DerivedDimension):
 
     @cached_property
     def step(self):
-        return self._step if self._step is not None else self.symbolic_size
+        if self._step is not None:
+            return self._step
+        else:
+            return Scalar(name=self.size_name, dtype=np.int32, is_const=True)
 
     @cached_property
     def symbolic_size(self):

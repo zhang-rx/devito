@@ -66,12 +66,9 @@ def cire(cluster, template, platform):
     candidates, processed = extract(exprs, aliases)
 
     # Create Aliases from aliasing expressions and assign them to Clusters
-    clusters, subs = process(candidates, aliases, cluster, template, platform)
+    clusters = process(cluster, candidates, processed, aliases, template, platform)
 
-    # Make sure to access the newly created tensor temporaries where necessary
-    processed = [e.xreplace(subs) for e in processed]
-
-    return clusters + [cluster.rebuild(processed)]
+    return clusters
 
 
 def collect(exprs):
@@ -176,16 +173,13 @@ def extract(exprs, aliases):
     return candidates, processed
 
 
-def process(candidates, aliases, cluster, template, platform):
+def process(cluster, candidates, processed, aliases, template, platform):
     """
     Create Clusters from aliasing expressions.
     """
-    # Create index mapper to handle IncrDimension
-    mapper = {i.dim: IncrDimension(i.dim, 0, i.dim.symbolic_size, 1, "%ss" % i.dim.name)
-              for i in cluster.ispace.intervals if i.dim.is_Incr}
-
     clusters = []
     subs = {}
+    mapper = {}
     for origin, alias in aliases.items():
         if all(i not in candidates for i in alias.aliased):
             continue
@@ -205,6 +199,12 @@ def process(candidates, aliases, cluster, template, platform):
         except IndexError:
             perf_adv("Couldn't optimize some of the detected redundancies")
 
+        # IncrDimensions, if present, must be substituted with other IncrDimensions
+        # starting at 0
+        for d in writeto.dimensions:
+            if d.is_Incr and d not in mapper:
+                mapper[d] = IncrDimension(d, 0, d.symbolic_size - 1, 1, "%ss" % d.name)
+
         # Create a temporary to store `alias`
         #TODO: was `dimensions = [d.root for d in writeto.dimensions]`
         array = Array(name=template(), dtype=cluster.dtype,
@@ -213,10 +213,6 @@ def process(candidates, aliases, cluster, template, platform):
 
         # The expression computing `alias`
         expression = Eq(array.indexify(), origin.xreplace(subs))
-
-        if cluster.exprs[-1].lhs.name == 'v' and len(cluster.exprs) > 27:
-            if str(origin) == "-0.0500000007*v[t, x + 4, y + 3, z + 4] + 0.0500000007*v[t, x + 4, y + 5, z + 4]":
-                from IPython import embed; embed()
 
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
@@ -231,7 +227,7 @@ def process(candidates, aliases, cluster, template, platform):
         # Construct the `alias` IterationSpace
         intervals = cluster.ispace.intervals.add(writeto)
         sub_iterators = dict(cluster.ispace.sub_iterators)
-        sub_iterators.update({d: mapper[d] for d in writeto.dimensions if d in mapper})
+        sub_iterators.update({d: [mapper[d]] for d in writeto.dimensions if d in mapper})
         directions = cluster.ispace.directions
         ispace = IterationSpace(intervals, sub_iterators, directions)
 
@@ -254,7 +250,18 @@ def process(candidates, aliases, cluster, template, platform):
         # Create a new Cluster for `alias`
         clusters.append(cluster.rebuild(exprs=[expression], ispace=ispace, dspace=dspace))
 
-    return clusters, subs
+    # Rebuild `cluster`
+    processed = [e.xreplace(subs) for e in processed]
+
+    intervals = cluster.ispace.intervals
+    sub_iterators = dict(cluster.ispace.sub_iterators)
+    sub_iterators.update({k: [v] for k, v in mapper.items()})
+    directions = cluster.ispace.directions
+    ispace = IterationSpace(intervals, sub_iterators, directions)
+
+    rebuilt = cluster.rebuild(exprs=processed, ispace=ispace)
+
+    return clusters + [rebuilt]
 
 
 # Helpers

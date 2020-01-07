@@ -115,8 +115,12 @@ def decompose(ispace, d, block_dims):
 
     intervals = IntervalGroup(intervals, relations=relations)
 
+    sub_iterators = dict(ispace.sub_iterators)
+    sub_iterators.pop(d, None)
+    sub_iterators.update({bd: ispace.sub_iterators.get(d, []) for bd in block_dims})
+
     directions = dict(ispace.directions)
     directions.pop(d)
     directions.update({bd: ispace.directions[d] for bd in block_dims})
 
-    return IterationSpace(intervals, ispace.sub_iterators, directions)
+    return IterationSpace(intervals, sub_iterators, directions)
