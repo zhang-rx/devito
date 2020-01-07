@@ -181,8 +181,7 @@ def process(candidates, aliases, cluster, template, platform):
     Create Clusters from aliasing expressions.
     """
     # Create index mapper to handle IncrDimension
-    mapper = {i.dim: IncrDimension(i.dim, i.lower, i.dim.symbolic_size + i.upper,
-                                   1, "%ss" % i.dim.name)
+    mapper = {i.dim: IncrDimension(i.dim, 0, i.dim.symbolic_size, 1, "%ss" % i.dim.name)
               for i in cluster.ispace.intervals if i.dim.is_Incr}
 
     clusters = []
