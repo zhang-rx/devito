@@ -923,7 +923,8 @@ class IncrDimension(DerivedDimension):
         return self._step if self._step is not None else self.symbolic_size
 
     @cached_property
-    def max_step(self):
+    def symbolic_size(self):
+        #TODO: previously was called max_step
         #TODO: check this: previously it was self.parent.symbolic_max - self.parent.symbolic_min + 1
         return self.symbolic_max - self.symbolic_min + 1
 

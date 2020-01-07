@@ -180,9 +180,13 @@ def process(candidates, aliases, cluster, template, platform):
     """
     Create Clusters from aliasing expressions.
     """
+    # Create index mapper to handle IncrDimension
+    mapper = {i.dim: IncrDimension(i.dim, i.lower, i.dim.symbolic_size + i.upper,
+                                   1, "%ss" % i.dim.name)
+              for i in cluster.ispace.intervals if i.dim.is_Incr}
+
     clusters = []
     subs = {}
-    index_mapper = {}
     for origin, alias in aliases.items():
         if all(i not in candidates for i in alias.aliased):
             continue
@@ -204,24 +208,13 @@ def process(candidates, aliases, cluster, template, platform):
 
         # Create a temporary to store `alias`
         #TODO: was `dimensions = [d.root for d in writeto.dimensions]`
-        array = Array(name=template(), dimensions=writeto.dimensions, dtype=cluster.dtype,
+        array = Array(name=template(), dtype=cluster.dtype,
+                      dimensions=tuple(mapper.get(d, d) for d in writeto.dimensions),
                       halo=[(abs(i.lower), abs(i.upper)) for i in writeto])
 
-        # Create the access indices for `alias`
-        indices = []
-        for d in writeto.dimensions:
-            if d.is_Incr:
-                if d in index_mapper:
-                    indices.append(index_mapper[d])
-                else:
-                    index_mapper[d] = IncrDimension()
-            else:
-                indices.append(d)
-        indices = [IncrDimension(name='%sl' % d.name) if d.]
+        # The expression computing `alias`
+        expression = Eq(array.indexify(), origin.xreplace(subs))
 
-        # Build up the expression evaluating `alias`
-        access = tuple(i.dim - i.lower for i in writeto)
-        expression = Eq(array[access], origin.xreplace(subs))
         if cluster.exprs[-1].lhs.name == 'v' and len(cluster.exprs) > 27:
             if str(origin) == "-0.0500000007*v[t, x + 4, y + 3, z + 4] + 0.0500000007*v[t, x + 4, y + 5, z + 4]":
                 from IPython import embed; embed()
@@ -230,15 +223,18 @@ def process(candidates, aliases, cluster, template, platform):
         # temporary in place of the aliasing expressions
         for aliased, distance in alias.with_distance:
             assert all(i.dim in distance.labels for i in writeto)
-            access = [i.dim - i.lower + distance[i.dim] for i in writeto]
+            indices = [mapper.get(i.dim, i.dim)-i.lower+distance[i.dim] for i in writeto]
             if aliased in candidates:
                 # It would *not* be in `candidates` if part of a composite alias
-                subs[candidates[aliased]] = array[access]
-            subs[aliased] = array[access]
+                subs[candidates[aliased]] = array[indices]
+            subs[aliased] = array[indices]
 
         # Construct the `alias` IterationSpace
-        intervals, sub_iterators, directions = cluster.ispace.args
-        ispace = IterationSpace(intervals.add(writeto), sub_iterators, directions)
+        intervals = cluster.ispace.intervals.add(writeto)
+        sub_iterators = dict(cluster.ispace.sub_iterators)
+        sub_iterators.update({d: mapper[d] for d in writeto.dimensions if d in mapper})
+        directions = cluster.ispace.directions
+        ispace = IterationSpace(intervals, sub_iterators, directions)
 
         # Optimize the `alias` IterationSpace: if possible, the innermost
         # IterationInterval is rounded up to a multiple of the vector length
@@ -251,9 +247,9 @@ def process(candidates, aliases, cluster, template, platform):
             pass
 
         # Construct the `alias` DataSpace
-        mapper = detect_accesses(expression)
+        accesses = detect_accesses(expression)
         parts = {k: IntervalGroup(build_intervals(v)).add(ispace.intervals)
-                 for k, v in mapper.items() if k}
+                 for k, v in accesses.items() if k}
         dspace = DataSpace(cluster.dspace.intervals, parts)
 
         # Create a new Cluster for `alias`
