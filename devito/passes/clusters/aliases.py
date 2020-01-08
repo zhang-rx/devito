@@ -453,8 +453,17 @@ class Alias(object):
         """
         The written data region, as an IntervalGroup.
         """
-        intervals = [Interval(d, *v) for d, v in self._relaxed_diameter.items()]
+        # A map telling the min/max offsets along each Dimension. "relaxed"
+        # because it includes the ghost offsets too
+        relaxed_diameter = OrderedDict((k, (min(v), max(v)))
+                                       for k, v in self.anti_stencil.items())
+
+        # Overestimated write-to region
+        intervals = [Interval(d, *v) for d, v in relaxed_diameter.items()]
         intervals = IntervalGroup(intervals)
+
+        if len(intervals) == 5:
+            from IPython import embed; embed()
 
         # Optimization: only retain those Interval along which the redundancies
         # have been captured
@@ -481,19 +490,3 @@ class Alias(object):
     def relax(self, stencil):
         ghost_offsets = stencil.add(self.ghost_offsets)
         return Alias(self.alias, self.aliased, self.distances, ghost_offsets)
-
-    @property
-    def _diameter(self):
-        """
-        The min/max distance along each Dimension for this Alias.
-        """
-        return OrderedDict((k, (min(v), max(v))) for k, v in self.Tdistances)
-
-    @property
-    def _relaxed_diameter(self):
-        """
-        Return a map telling the min/max offsets in each Dimension for this Alias.
-        The extremes are potentially larger than those provided by ``self.diameter``,
-        as here we're also taking into account the ghost offsets.
-        """
-        return OrderedDict((k, (min(v), max(v))) for k, v in self.anti_stencil.items())
