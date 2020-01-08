@@ -1,5 +1,6 @@
 from collections import OrderedDict, namedtuple
 
+from cached_property import cached_property
 from sympy import Indexed
 import numpy as np
 
@@ -66,9 +67,14 @@ def cire(cluster, template, platform):
     candidates, processed = extract(exprs, aliases)
 
     # Create Aliases from aliasing expressions and assign them to Clusters
-    clusters = process(cluster, candidates, processed, aliases, template, platform)
+    clusters, subs = process(cluster, candidates, processed, aliases, template, platform)
 
-    return clusters
+    # Rebuild `cluster` so as to use the newly created tensor temporaries
+    processed = [e.xreplace(subs) for e in processed]
+    ispace = cluster.ispace.augment(aliases.index_mapper)
+    rebuilt = cluster.rebuild(exprs=processed, ispace=ispace)
+
+    return clusters + [rebuilt]
 
 
 def collect(exprs):
@@ -134,7 +140,7 @@ def collect(exprs):
         alias = c.expr.xreplace(subs)
         aliased = [i.expr for i in group]
 
-        aliases[alias] = Alias(alias, aliased, distances)
+        aliases.add(alias, aliased, distances)
 
     # Heuristically attempt to relax the Aliases offsets to maximize the
     # likelyhood of loop fusion
@@ -154,6 +160,7 @@ def extract(exprs, aliases):
     """
     Extract the candidate aliases.
     """
+    #TODO: turn is_time_invariant into is_invariant
     is_time_invariant = make_is_time_invariant(exprs)
     time_invariants = {e.rhs: is_time_invariant(e) for e in exprs}
 
@@ -179,53 +186,31 @@ def process(cluster, candidates, processed, aliases, template, platform):
     """
     clusters = []
     subs = {}
-    mapper = {}
     for origin, alias in aliases.items():
         if all(i not in candidates for i in alias.aliased):
             continue
 
-        # The write-to Intervals
-        writeto = [Interval(i.dim, *alias.relaxed_diameter.get(i.dim, (0, 0)))
-                   for i in cluster.ispace.intervals]
-        writeto = IntervalGroup(writeto)
-
-        # Optimization: no need to retain a SpaceDimension if it does not
-        # induce a flow/anti dependence (below, `i.offsets` captures this, by
-        # telling how much halo will be needed to honour such dependences)
-        dep_inducing = [i for i in writeto if any(i.offsets)]
-        try:
-            index = writeto.index(dep_inducing[0])
-            writeto = IntervalGroup(writeto[index:])
-        except IndexError:
-            #TODO: ending up too often here
-            perf_adv("Couldn't optimize some of the detected redundancies")
-
-        # IncrDimensions, if present, must be substituted with other IncrDimensions
-        # starting at 0
-        for d in writeto.dimensions:
-            if d.is_Incr and d not in mapper:
-                mapper[d] = IncrDimension(d, 0, d.symbolic_size - 1, 1, "%ss" % d.name)
-
         # Create a temporary to store `alias`
-        array = Array(name=template(), dtype=cluster.dtype,
-                      dimensions=tuple(mapper.get(d, d) for d in writeto.dimensions),
-                      halo=[(abs(i.lower), abs(i.upper)) for i in writeto])
+        array = Array(name=template(), dimensions=alias.writeto.dimensions,
+                      halo=[(abs(i.lower), abs(i.upper)) for i in alias.writeto],
+                      dtype=cluster.dtype, scope='stack' if alias.fits_stack else 'heap')
 
         # The expression computing `alias`
-        expression = Eq(array.indexify(), origin.xreplace(subs))
+        expression = Eq(array[aliases.index(origin)], origin.xreplace(subs))
 
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
         for aliased, distance in alias.with_distance:
-            assert all(i.dim in distance.labels for i in writeto)
-            indices = [mapper.get(i.dim, i.dim)-i.lower+distance[i.dim] for i in writeto]
+            assert all(i.dim in distance.labels for i in alias.writeto)
+            offsets = [-i.lower + distance[i.dim] for i in alias.writeto]
+            indices = [i + o for i, o in zip(aliases.index(origin), offsets)]
             if aliased in candidates:
                 # It would *not* be in `candidates` if part of a composite alias
                 subs[candidates[aliased]] = array[indices]
             subs[aliased] = array[indices]
 
         # Construct the `alias` IterationSpace
-        ispace = cluster.ispace.add(writeto).augment(mapper)
+        ispace = cluster.ispace.add(alias.writeto).augment(aliases.index_mapper)
 
         # Optimize the `alias` IterationSpace: if possible, the innermost
         # IterationInterval is rounded up to a multiple of the vector length
@@ -243,15 +228,10 @@ def process(cluster, candidates, processed, aliases, template, platform):
                  for k, v in accesses.items() if k}
         dspace = DataSpace(cluster.dspace.intervals, parts)
 
-        # Create a new Cluster for `alias`
-        clusters.append(cluster.rebuild(exprs=[expression], ispace=ispace, dspace=dspace))
+        # Finally create the new Cluster hosting `alias`
+        clusters.append(cluster.rebuild(exprs=expression, ispace=ispace, dspace=dspace))
 
-    # Rebuild `cluster`
-    processed = [e.xreplace(subs) for e in processed]
-    ispace = cluster.ispace.augment(mapper)
-    rebuilt = cluster.rebuild(exprs=processed, ispace=ispace)
-
-    return clusters + [rebuilt]
+    return clusters, subs
 
 
 # Helpers
@@ -269,7 +249,7 @@ def analyze(expr):
 
         A[i, j, k], B[i, j+2, k+3], C[i-1, j+4]
 
-    All of the access functions all affine in ``i, j, k``, and the offsets are: ::
+    All of the access functions are affine in ``i, j, k``, and the offsets are: ::
 
         (0, 0, 0), (0, 2, 3), (-1, 4)
     """
@@ -395,6 +375,24 @@ def calculate_COM(group):
 
 class Aliases(OrderedDict):
 
+    def __init__(self):
+        super(Aliases, self).__init__()
+
+        self.index_mapper = {}
+
+    def add(self, alias, aliased, distances):
+        self[alias] = Alias(alias, aliased, distances)
+
+        # Update the index_mapper
+        for d in self[alias].writeto.dimensions:
+            if d in self.index_mapper:
+                continue
+            if d.is_Incr:
+                # IncrDimensions, if present, must be substituted such that we
+                # stay in bounds when indexing into the alias
+                self.index_mapper[d] = IncrDimension(d, 0, d.symbolic_size - 1, 1,
+                                                     "%ss" % d.name)
+
     def get(self, key):
         ret = super(Aliases, self).get(key)
         if ret is not None:
@@ -403,6 +401,11 @@ class Aliases(OrderedDict):
             if key in v.aliased:
                 return v.aliased
         return []
+
+    def index(self, key):
+        if key not in self:
+            raise KeyError
+        return [self.index_mapper.get(d, d) for d in self[key].writeto.dimensions]
 
 
 class Alias(object):
@@ -424,11 +427,11 @@ class Alias(object):
         # Transposed distances
         self.Tdistances = LabeledVector.transpose(*distances)
 
-    @property
+    @cached_property
     def dimensions(self):
         return tuple(i for i, _ in self.Tdistances)
 
-    @property
+    @cached_property
     def anti_stencil(self):
         ret = Stencil()
         for k, v in self.Tdistances:
@@ -437,27 +440,38 @@ class Alias(object):
             ret[k].update(v)
         return ret
 
-    @property
-    def diameter(self):
-        """
-        The min/max distance along each Dimension for this Alias.
-        """
-        return OrderedDict((k, (min(v), max(v))) for k, v in self.Tdistances)
-
-    @property
-    def relaxed_diameter(self):
-        """
-        Return a map telling the min/max offsets in each Dimension for this Alias.
-        The extremes are potentially larger than those provided by ``self.diameter``,
-        as here we're also taking into account the ghost offsets.
-        """
-        return OrderedDict((k, (min(v), max(v))) for k, v in self.anti_stencil.items())
-
-    @property
+    @cached_property
     def with_distance(self):
-        """Return a tuple associating each aliased expression with its distance from
-        ``self.alias``."""
+        """
+        Return a tuple associating each aliased expression with its distance
+        from ``self.alias``.
+        """
         return tuple(zip(self.aliased, self.distances))
+
+    @cached_property
+    def writeto(self):
+        """
+        The written data region, as an IntervalGroup.
+        """
+        intervals = [Interval(d, *v) for d, v in self._relaxed_diameter.items()]
+        intervals = IntervalGroup(intervals)
+
+        # Optimization: only retain those Interval along which the redundancies
+        # have been captured
+        dep_inducing = [i for i in intervals if any(i.offsets)]
+        try:
+            if dep_inducing:
+                index = intervals.index(dep_inducing[0])
+                intervals = IntervalGroup(intervals[index:])
+        except IndexError:
+            perf_adv("Couldn't optimize some of the detected redundancies")
+
+        return intervals
+
+    @property
+    def fits_stack(self):
+        #TODO: improve me
+        return len([i for i in self.writeto if not i.dim.is_Incr])
 
     def add(self, aliased, distance):
         aliased = self.aliased + [aliased]
@@ -467,3 +481,19 @@ class Alias(object):
     def relax(self, stencil):
         ghost_offsets = stencil.add(self.ghost_offsets)
         return Alias(self.alias, self.aliased, self.distances, ghost_offsets)
+
+    @property
+    def _diameter(self):
+        """
+        The min/max distance along each Dimension for this Alias.
+        """
+        return OrderedDict((k, (min(v), max(v))) for k, v in self.Tdistances)
+
+    @property
+    def _relaxed_diameter(self):
+        """
+        Return a map telling the min/max offsets in each Dimension for this Alias.
+        The extremes are potentially larger than those provided by ``self.diameter``,
+        as here we're also taking into account the ghost offsets.
+        """
+        return OrderedDict((k, (min(v), max(v))) for k, v in self.anti_stencil.items())
