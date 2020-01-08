@@ -100,14 +100,11 @@ def test_cache_blocking_structure(blockinner, exp_calls, exp_iters):
     assert len(trees) == 1
     tree = trees[0]
     assert len(tree) == exp_iters
-    assert isinstance(tree[0].dim, IncrDimension)
-    assert isinstance(tree[1].dim, IncrDimension)
     if blockinner:
-        assert isinstance(tree[2].dim, IncrDimension)
+        assert all(tree[i].dim.is_Incr for i in range(exp_iters))
     else:
-        assert not isinstance(tree[2].dim, IncrDimension)
-    assert not isinstance(tree[3].dim, IncrDimension)
-    assert not isinstance(tree[4].dim, IncrDimension)
+        assert all(tree[i].dim.is_Incr for i in range(exp_iters-1))
+        assert not tree[-1].dim.is_Incr
 
     # Check presence of openmp pragmas at the right place
     _, op = _new_operator2((10, 31, 45), time_order=2,
