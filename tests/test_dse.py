@@ -281,12 +281,12 @@ class TestAliases(object):
         # Leads to 3D aliases
         eqn = Eq(u.forward, ((u[t, x, y, z] + u[t, x+1, y+1, z+1])*3*f +
                              (u[t, x+2, y+2, z+2] + u[t, x+3, y+3, z+3])*3*f + 1))
-        op0 = Operator(eqn, dse='noop', dle=('advanced', {'openmp': True}))
-        op1 = Operator(eqn, dse='aggressive', dle=('advanced', {'openmp': True}))
+        op0 = Operator(eqn, dle=('noop', {'openmp': True}))
+        op1 = Operator(eqn, dle=('advanced', {'openmp': True}))
 
-        x0_blk_size = op1.parameters[-3]
-        y0_blk_size = op1.parameters[-2]
-        z_size = op1.parameters[4]
+        x0_blk_size = op1.parameters[5]
+        y0_blk_size = op1.parameters[8]
+        z_size = op1.parameters[-2]
 
         # Check Array shape
         arrays = [i for i in FindSymbols().visit(op1._func_table['bf0'].root)
