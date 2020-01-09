@@ -64,6 +64,17 @@ matrix:
             - gcc-7
             - g++-7
       env: DEVITO_ARCH=gcc-7 DEVITO_OPENMP=0 DEVITO_BACKEND=ops YC_CXX=g++-7 INSTALL_TYPE=conda RUN_EXAMPLES=False MPI_INSTALL=0
+    - python: 3.7
+      dist: xenial
+      os: linux
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
+          packages:
+            - gcc-9
+            - g++-9
+      env: DEVITO_ARCH=gcc-9 DEVITO_OPENMP=0 RUN_EXAMPLES=False INSTALL_TYPE=conda RUN_BENCHMARKS=True MPI_INSTALL=0
 
 addons:
   apt:
@@ -96,8 +107,11 @@ install:
       pip install -e .;
       conda list;
     fi
-  - if [[ "$MPI_INSTALL" == '1' ]]; then
+  - if [[ $MPI_INSTALL == '1' ]]; then
       pip install -r requirements-optional.txt;
+    fi
+  - if [[ $RUN_BENCHMARKS == 'True' ]]; then
+      pip install asv;
     fi
 
   # Install devito with pip
@@ -136,6 +150,15 @@ script:
   - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/seismic/tutorials; fi
   - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/compiler; fi
   - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/userapi; fi
+  # Run benchmarks with Airspeed Velocity
+  - if [[ $RUN_BENCHMARKS == 'True' ]]; then
+      cd benchmarks/regression;
+      bash merge_history.sh;
+      asv run HASHFILE:merge_history.txt;
+      asv publish;
+      asv gh-pages;
+      cd ../..;
+    fi
   # Code coverage and documentation generation
   - if [[ $INSTALL_TYPE == 'conda' ]]; then
       codecov;
