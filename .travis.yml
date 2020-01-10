@@ -10,60 +10,6 @@ env:
 
 matrix:
   include:
-    - python: 3.6
-      os: linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
-          packages:
-            - gcc-4.9
-            - g++-4.9
-      env: DEVITO_ARCH=gcc-4.9 DEVITO_OPENMP=0 INSTALL_TYPE=pip_setup RUN_EXAMPLES=False MPI_INSTALL=1 MPI_RESTRAIN=1
-    - python: 3.8
-      dist: xenial
-      os: linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
-          packages:
-            - gcc-5
-            - g++-5
-      env: DEVITO_ARCH=gcc-5 DEVITO_OPENMP=0 RUN_EXAMPLES=False INSTALL_TYPE=conda MPI_INSTALL=0
-    - python: 3.7
-      dist: xenial
-      os: linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
-          packages:
-            - gcc-8
-            - g++-8
-      env: DEVITO_ARCH=gcc-8 DEVITO_OPENMP=1 OMP_NUM_THREADS=2 RUN_EXAMPLES=True INSTALL_TYPE=conda MPI_INSTALL=1 MPI_RESTRAIN=1
-    - python: 3.7
-      dist: xenial
-      os: linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
-          packages:
-            - gcc-7
-            - g++-7
-      env: DEVITO_ARCH=gcc-7 DEVITO_OPENMP=0 DEVITO_BACKEND=yask YC_CXX=g++-7 INSTALL_TYPE=conda RUN_EXAMPLES=False MPI_INSTALL=1
-    - python: 3.7
-      dist: xenial
-      os: linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test     # For gcc 4.9, 5 and 7
-          packages:
-            - gcc-7
-            - g++-7
-      env: DEVITO_ARCH=gcc-7 DEVITO_OPENMP=0 DEVITO_BACKEND=ops YC_CXX=g++-7 INSTALL_TYPE=conda RUN_EXAMPLES=False MPI_INSTALL=0
     - python: 3.7
       dist: xenial
       os: linux
@@ -128,28 +74,6 @@ before_script:
 
 script:
   - flake8 --builtins=ArgumentError .
-  # Run test with py.tests
-  - if [[ $INSTALL_TYPE == 'pip_setup' ]]; then python setup.py test; fi
-  - if [[ $INSTALL_TYPE == 'conda' ]]; then py.test --durations=20 --maxfail=5 $COV devito tests/; fi
-  # Run remaining specialized examples and tests
-  # Additional seismic operator tests
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python benchmarks/user/benchmark.py test -P tti -so 4 -d 20 20 20 -n 5; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python benchmarks/user/benchmark.py test -P acoustic; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/seismic/acoustic/acoustic_example.py --full; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/seismic/acoustic/acoustic_example.py --full --checkpointing; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/seismic/acoustic/acoustic_example.py --constant --full; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/misc/linalg.py mat-vec mat-mat-sum transpose-mat-vec; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/seismic/tti/tti_example.py -a basic; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/seismic/tti/tti_example.py -a basic --noazimuth; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then python examples/cfd/example_diffusion.py; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test examples/cfd/example_diffusion.py; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test examples/seismic/elastic/elastic_example.py; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test examples/seismic/viscoelastic/viscoelastic_example.py; fi
-  # Test tutorial notebooks for the website using nbval
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/cfd; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/seismic/tutorials; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/compiler; fi
-  - if [[ $RUN_EXAMPLES == 'True' ]]; then py.test --nbval examples/userapi; fi
   # Run benchmarks with Airspeed Velocity
   - if [[ $RUN_BENCHMARKS == 'True' ]]; then
       cd benchmarks/regression;
