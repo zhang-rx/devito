@@ -67,8 +67,8 @@ class TestOffloading(object):
                  '[0:%(n)s_vec->size[1]][0:%(n)s_vec->size[2]][0:%(n)s_vec->size[3]])' %
                  {'n': f.name})
 
-   @switchconfig(platform='nvidiaX')
-   def test_op_apply(self):
+    @switchconfig(platform='nvidiaX')
+    def test_op_apply(self):
         grid = Grid(shape=(3, 3, 3))
 
         u = TimeFunction(name='u', grid=grid)
