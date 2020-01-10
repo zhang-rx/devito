@@ -11,4 +11,4 @@ def time_basic():
 
     op = Operator(Eq(f.forward, f + 1))
 
-    op.apply(time_M=10)
+    op.apply(time_M=100000)

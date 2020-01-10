@@ -16,7 +16,7 @@ class IsotropicAcoustic(object):
     # Default number of threads -- run across all sockets currently
     nthreads = configuration['platform'].cores_physical
 
-    def time_forward(self, shape, space_order):
+    def AAAtime_forward(self, shape, space_order):
         solver = acoustic_setup(shape=shape,
                                 space_order=space_order,
                                 dle=('advanced', {'openmp': True}))
