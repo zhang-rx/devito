@@ -1,21 +1,8 @@
-from functools import reduce
-from operator import mul
-
-from sympy import Add
 import numpy as np
-import pytest
-from unittest.mock import patch
 
 from conftest import skipif
-from devito import (Grid, Function, TimeFunction, SparseTimeFunction, SubDimension,
-                    Eq, Operator, switchconfig)
-from devito.exceptions import InvalidArgument
-from devito.ir.iet import (Call, Iteration, Conditional, FindNodes, FindSymbols,
-                           retrieve_iteration_tree)
-from devito.targets import BlockDimension, NThreads, NThreadsNonaffine
-from devito.targets.common.openmp import ParallelRegion
-from devito.tools import as_tuple
-from devito.types import Scalar
+from devito import Grid, TimeFunction, Eq, Operator, switchconfig
+from devito.ir.iet import retrieve_iteration_tree
 
 pytestmark = skipif(['yask', 'ops'])
 
@@ -79,4 +66,3 @@ class TestOffloading(object):
         op.apply(time_M=time_steps)
 
         assert np.all(np.array(u.data[0, :, :, :]) == time_steps)
-
