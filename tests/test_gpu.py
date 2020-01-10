@@ -71,11 +71,12 @@ class TestOffloading(object):
     def test_op_apply(self):
         grid = Grid(shape=(3, 3, 3))
 
-        u = TimeFunction(name='u', grid=grid)
+        u = TimeFunction(name='u', grid=grid, dtype=np.int32)
 
         op = Operator(Eq(u.forward, u + 1), dle=('advanced', {'openmp': True}))
 
-        time_steps = 4
+        time_steps = 1000
         op.apply(time_M=time_steps)
 
-        assert np.all(u.data[:] == time_steps)
+        assert np.all(np.array(u.data[0, :, :, :]) == time_steps)
+
