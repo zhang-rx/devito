@@ -29,8 +29,12 @@ class Blocker(object):
         """
         Apply loop blocking to PARALLEL Iteration trees.
         """
-        # Make sure loop blocking will span as many Iterations as possible
-        iet = fold_blockable_tree(iet, self.blockinner)
+        from devito.parameters import configuration
+        if configuration['dle-options'].get('small-grid', True):
+            pass
+        else:
+            # Make sure loop blocking will span as many Iterations as possible
+            iet = fold_blockable_tree(iet, self.blockinner)
 
         mapper = {}
         efuncs = []
