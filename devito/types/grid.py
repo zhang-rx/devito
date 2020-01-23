@@ -526,14 +526,16 @@ class SubDomainSet(SubDomain):
         # Create the SubDomain's SubDimensions
         sub_dimensions = []
         for d in dimensions:
-            sub_dimensions.append(
-                SubDimension.middle('%si_%s' % (d.name, self.implicit_dimension.name),
-                                    d, 0, 0))
+            sub_dimensions.append(SubDimension.middle
+                                  ('%si_%s' % (d.name, self.implicit_dimension.name),
+                                   d, 0, 0))
         self._dimensions = tuple(sub_dimensions)
         # Compute the SubDomain shape
+        # FIXME: _shape is not being calculated correctly - Here we should probably
+        # produce a tuple of tuples from 'bounds'.
         self._shape = tuple(s - (sum(d._thickness_map.values()) if d.is_Sub else 0)
                             for d, s in zip(self._dimensions, shape))
-        if distributor.is_parallel:
+        if distributor and distributor.is_parallel:
             # Now create local bounds based on distributor
             processed = []
             for i in range(len(self._global_bounds)):
@@ -552,6 +554,8 @@ class SubDomainSet(SubDomain):
                 processed.append(bounds)
             self._local_bounds = as_tuple(processed)
         else:
+            # Not distributed and hence local and global bounds are
+            # equivalent.
             self._local_bounds = self._global_bounds
 
     @property
