@@ -11,7 +11,7 @@ from devito import (Grid, Function, TimeFunction, SparseTimeFunction, SubDimensi
 from devito.exceptions import InvalidArgument
 from devito.ir.iet import Call, Iteration, Conditional, FindNodes, retrieve_iteration_tree
 from devito.passes.iet.openmp import ParallelRegion
-from devito.passes import IncrDimension, NThreads, NThreadsNonaffine
+from devito.passes import NThreads, NThreadsNonaffine
 from devito.tools import as_tuple
 from devito.types import Scalar
 
@@ -23,7 +23,7 @@ def get_blocksizes(op, dle, grid, blockshape, level=0):
                   for d, v in zip(grid.dimensions, blockshape)}
     blocksizes = {k: v for k, v in blocksizes.items() if k in op._known_arguments}
     # Sanity check
-    if grid.dim == 1 or len(blockshape) == 0:
+    if len(blockshape) == 0:
         assert len(blocksizes) == 0
         return {}
     try:
@@ -134,6 +134,7 @@ def test_cache_blocking_structure_subdims():
     """
     grid = Grid(shape=(4, 4, 4))
     x, y, z = grid.dimensions
+    xi, yi, zi = grid.interior.dimensions
     t = grid.stepping_dim
     xl = SubDimension.left(name='xl', parent=x, thickness=4)
 
@@ -151,9 +152,13 @@ def test_cache_blocking_structure_subdims():
     assert len(trees) == 1
     tree = trees[0]
     assert len(tree) == 5
-    assert isinstance(tree[0].dim, IncrDimension) and tree[0].dim.root is x
-    assert isinstance(tree[1].dim, IncrDimension) and tree[1].dim.root is y
-    assert not isinstance(tree[2].dim, IncrDimension)
+    assert tree[0].dim.is_Incr and tree[0].dim.parent is xi and tree[0].dim.root is x
+    assert tree[1].dim.is_Incr and tree[1].dim.parent is yi and tree[1].dim.root is y
+    assert tree[2].dim.is_Incr and tree[2].dim.parent is tree[0].dim and\
+        tree[2].dim.root is x
+    assert tree[3].dim.is_Incr and tree[3].dim.parent is tree[1].dim and\
+        tree[3].dim.root is y
+    assert not tree[4].dim.is_Incr and tree[4].dim is zi and tree[4].dim.parent is z
 
 
 @pytest.mark.parametrize("shape", [(10,), (10, 45), (20, 33), (10, 31, 45), (45, 31, 45)])
