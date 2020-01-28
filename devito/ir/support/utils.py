@@ -1,14 +1,13 @@
 from collections import OrderedDict, defaultdict
 
-from devito.ir.support.basic import Access
-from devito.ir.support.space import Interval, Backward, Forward, Any
+from devito.ir.support.space import Interval
 from devito.ir.support.stencil import Stencil
 from devito.symbolics import retrieve_indexed, retrieve_terminals
 from devito.tools import as_tuple, flatten, filter_sorted
 from devito.types import Dimension, ModuloDimension
 
 __all__ = ['detect_accesses', 'detect_oobs', 'build_iterators', 'build_intervals',
-           'detect_flow_directions', 'force_directions', 'align_accesses', 'detect_io']
+           'align_accesses', 'detect_io']
 
 
 def detect_accesses(expr):
@@ -20,8 +19,8 @@ def detect_accesses(expr):
     """
     # Compute M : F -> S
     mapper = defaultdict(Stencil)
-    for e in retrieve_indexed(expr, mode='all', deep=True):
-        f = e.base.function
+    for e in retrieve_indexed(expr, deep=True):
+        f = e.function
         for a in e.indices:
             if isinstance(a, Dimension):
                 mapper[f][a].update([0])
@@ -36,8 +35,9 @@ def detect_accesses(expr):
                 mapper[f][d].update(off or [0])
 
     # Compute M[None]
-    mapper[None] = Stencil([(i, 0) for i in retrieve_terminals(expr)
-                            if isinstance(i, Dimension)])
+    other_dims = [i for i in retrieve_terminals(expr) if isinstance(i, Dimension)]
+    other_dims.extend(list(expr.implicit_dims))
+    mapper[None] = Stencil([(i, 0) for i in other_dims])
 
     return mapper
 
@@ -55,7 +55,11 @@ def detect_oobs(mapper):
         for d, v in stencil.items():
             p = d.parent if d.is_Sub else d
             try:
-                if min(v) < 0 or max(v) > sum(f._size_halo[p]):
+                test0 = min(v) < 0
+                test1 = max(v) > f._size_nodomain[p].left + f._size_halo[p].right
+                if test0 or test1:
+                    # It'd mean trying to access a point before the
+                    # left padding (test0) or after the right halo (test1)
                     found.add(p)
             except KeyError:
                 # Unable to detect presence of OOB accesses
@@ -102,131 +106,29 @@ def build_intervals(stencil):
 def align_accesses(expr, key=lambda i: False):
     """
     ``expr -> expr'``, with ``expr'`` semantically equivalent to ``expr``, but
-    with data accesses aligned to the computational domain if ``key(function)``
-    gives True.
+    with data accesses aligned to the domain if ``key(function)`` gives True.
     """
     mapper = {}
     for indexed in retrieve_indexed(expr):
         f = indexed.function
         if not key(f):
             continue
-        subs = {i: i + j for i, j in zip(indexed.indices, f._size_halo.left)}
+        subs = {i: i + j for i, j in zip(indexed.indices, f._size_nodomain.left)}
         mapper[indexed] = indexed.xreplace(subs)
     return expr.xreplace(mapper)
 
 
-def detect_flow_directions(exprs):
-    """
-    Return a mapper from Dimensions to Iterables of
-    IterationDirections representing the theoretically necessary
-    directions to evaluate ``exprs`` so that the information "naturally
-    flows" from an iteration to another.
-    """
-    exprs = as_tuple(exprs)
-
-    writes = [Access(i.lhs, 'W') for i in exprs]
-    reads = flatten(retrieve_indexed(i.rhs, mode='all') for i in exprs)
-    reads = [Access(i, 'R') for i in reads]
-
-    # Determine indexed-wise direction by looking at the distance vector
-    mapper = defaultdict(set)
-    for w in writes:
-        for r in reads:
-            if r.name != w.name:
-                continue
-            dimensions = [d for d in w.aindices if d is not None]
-            if not dimensions:
-                continue
-            for d in dimensions:
-                distance = None
-                for i in d._defines:
-                    try:
-                        distance = w.distance(r, i, view=i)
-                    except TypeError:
-                        pass
-                try:
-                    if distance > 0:
-                        mapper[d].add(Forward)
-                        break
-                    elif distance < 0:
-                        mapper[d].add(Backward)
-                        break
-                    else:
-                        mapper[d].add(Any)
-                except TypeError:
-                    # Nothing can be deduced
-                    mapper[d].add(Any)
-                    break
-            # Remainder
-            for d in dimensions[dimensions.index(d) + 1:]:
-                mapper[d].add(Any)
-
-    # Add in any encountered Dimension
-    mapper.update({d: {Any} for d in flatten(i.aindices for i in reads + writes)
-                   if d is not None and d not in mapper})
-
-    # Add in derived-dimensions parents, in case they haven't been detected yet
-    mapper.update({k.parent: set(v) for k, v in mapper.items()
-                   if k.is_Derived and mapper.get(k.parent, {Any}) == {Any}})
-
-    # Add in "free" Dimensions, ie Dimensions used as symbols rather than as
-    # array indices
-    mapper.update({d: {Any} for d in flatten(i.free_symbols for i in exprs)
-                   if isinstance(d, Dimension) and d not in mapper})
-
-    return mapper
-
-
-def force_directions(mapper, key):
-    """
-    Return a mapper ``M : D -> I`` where D is the set of Dimensions
-    found in the input mapper ``M' : D -> {I}``, while I = {Any, Backward,
-    Forward} (i.e., the set of possible IterationDirections).
-
-    The iteration direction is chosen so that the information "naturally flows"
-    from an iteration to another (i.e., to generate "flow" or "read-after-write"
-    dependencies).
-
-    In the case of a clash (e.g., both Forward and Backward should be used
-    for a given dimension in order to have a flow dependence), the function
-    ``key : D -> I`` is used to pick one value.
-    """
-    mapper = {k: set(v) for k, v in mapper.items()}
-    clashes = set(k for k, v in mapper.items() if len(v - {Any}) > 1)
-    directions = {}
-    for k, v in mapper.items():
-        if len(v) == 1:
-            directions[k] = v.pop()
-        elif len(v) == 2:
-            try:
-                v.remove(Any)
-                directions[k] = v.pop()
-            except KeyError:
-                assert k in clashes
-                directions[k] = key(k)
-        else:
-            assert k in clashes
-            directions[k] = key(k)
-
-    # Derived dimensions enforce a direction on the parent
-    for k, v1 in list(directions.items()):
-        if k.is_Derived and directions.get(k.parent) == Any:
-            directions[k.parent] = v1
-
-    return directions, clashes
-
-
 def detect_io(exprs, relax=False):
     """
-    ``{exprs} -> ({reads}, {writes})
+    ``{exprs} -> ({reads}, {writes})``
 
     Parameters
     ----------
     exprs : expr-like or list of expr-like
         The searched expressions.
     relax : bool, optional
-        If False, as by default, collect only Constants and
-        Functions. Otherwise, collect any :class:`types.Basic`s.
+        If False, as by default, collect only Constants and Functions.
+        Otherwise, collect any Basic object.
     """
     exprs = as_tuple(exprs)
     if relax is False:
@@ -234,11 +136,24 @@ def detect_io(exprs, relax=False):
     else:
         rule = lambda i: i.is_Scalar or i.is_Tensor
 
+    # Don't forget this nasty case, with indirections on the LHS:
+    # >>> u[t, a[x]] = f[x]  -> (reads={a, f}, writes={u})
+
+    roots = []
+    for i in exprs:
+        try:
+            roots.append(i.rhs)
+            roots.extend(list(i.lhs.indices))
+        except AttributeError:
+            # E.g., FunctionFromPointer
+            roots.append(i)
+
     reads = []
-    for i in flatten(retrieve_terminals(i, deep=True) for i in exprs):
+    terminals = flatten(retrieve_terminals(i, deep=True) for i in roots)
+    for i in terminals:
         candidates = i.free_symbols
         try:
-            candidates.update({i.base.function})
+            candidates.update({i.function})
         except AttributeError:
             pass
         for j in candidates:
@@ -251,7 +166,7 @@ def detect_io(exprs, relax=False):
     writes = []
     for i in exprs:
         try:
-            f = i.lhs.base.function
+            f = i.lhs.function
         except AttributeError:
             continue
         if rule(f):

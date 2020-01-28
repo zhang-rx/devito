@@ -1,3 +1,5 @@
+import sympy
+
 from scipy import interpolate
 from cached_property import cached_property
 import numpy as np
@@ -7,7 +9,6 @@ except:
     plt = None
 
 from devito.types import Dimension, SparseTimeFunction
-
 
 __all__ = ['PointSource', 'Receiver', 'Shot', 'WaveletSource',
            'RickerSource', 'GaborSource', 'DGaussSource', 'TimeAxis']
@@ -103,7 +104,19 @@ class PointSource(SparseTimeFunction):
         Represents the number of points in this source.
     """
 
-    def __new__(cls, **kwargs):
+    def __new__(cls, *args, **kwargs):
+        options = kwargs.get('options', {})
+
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
+
+        if obj is not None:
+            newobj = sympy.Function.__new__(cls, *args, **options)
+            newobj.__init_cached__(key)
+            return newobj
+
+        # Not in cache. Create a new PointSouce via devito.SparseTimeFunction
+
         name = kwargs.pop('name')
         grid = kwargs.pop('grid')
         time_range = kwargs.pop('time_range')
@@ -159,7 +172,7 @@ class PointSource(SparseTimeFunction):
             new_time_range = TimeAxis(start=start, stop=stop, step=dt)
 
         if np.isclose(dt, dt0):
-            return
+            return self
 
         nsamples, ntraces = self.data.shape
 
@@ -201,16 +214,24 @@ class WaveletSource(PointSource):
     """
 
     def __new__(cls, *args, **kwargs):
+        options = kwargs.get('options', {})
+
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
+
+        if obj is not None:
+            newobj = sympy.Function.__new__(cls, *args, **options)
+            newobj.__init_cached__(key)
+            return newobj
+
+        # Not in cache. Create a new WaveletSouce via PointSource
         npoint = kwargs.pop('npoint', 1)
         obj = PointSource.__new__(cls, npoint=npoint, **kwargs)
         obj.f0 = kwargs.get('f0')
         for p in range(npoint):
             obj.data[:, p] = obj.wavelet(obj.f0, obj.time_values)
-        return obj
 
-    def __init__(self, *args, **kwargs):
-        if not self._cached():
-            super(WaveletSource, self).__init__(*args, **kwargs)
+        return obj
 
     def wavelet(self, f0, t):
         """

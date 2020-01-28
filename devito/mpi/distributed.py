@@ -21,11 +21,22 @@ try:
     import mpi4py
     mpi4py.rc(initialize=False, finalize=False)
     from mpi4py import MPI  # noqa
+
+    # From the `atexit` documentation: "At normal program termination [...]
+    # all functions registered are in last in, first out order.". So, MPI.Finalize
+    # will be called only at the very end, after all cloned communicators
+    # will have been freed
+    def cleanup():
+        if MPI.Is_initialized():
+            MPI.Finalize()
+    atexit.register(cleanup)
 except ImportError:
     # Dummy fallback in case mpi4py/MPI aren't available
-    class MPI(object):
-        COMM_NULL = None
+    class NoneMetaclass(type):
+        def __getattr__(self, name):
+            return None
 
+    class MPI(object, metaclass=NoneMetaclass):
         @classmethod
         def Is_initialized(cls):
             return False
@@ -33,11 +44,8 @@ except ImportError:
         def _sizeof(obj):
             return None
 
-        @property
-        def Comm(self):
+        def __getattr__(self, name):
             return None
-
-        Request = Comm
 
 
 __all__ = ['Distributor', 'SparseDistributor', 'MPI']
@@ -136,7 +144,7 @@ class AbstractDistributor(ABC):
             The global index Dimension.
         *args
             There are several possibilities, documented in
-            :meth:`Decomposition.convert_index`.
+            :meth:`Decomposition.index_glb_to_loc`.
         strict : bool, optional
             If False, return args without raising an error if `dim` does not appear
             among the Distributor Dimensions.
@@ -146,7 +154,7 @@ class AbstractDistributor(ABC):
                 raise ValueError("`%s` must be one of the Distributor dimensions" % dim)
             else:
                 return args[0]
-        return self.decomposition[dim].convert_index(*args)
+        return self.decomposition[dim].index_glb_to_loc(*args)
 
 
 class Distributor(AbstractDistributor):
@@ -173,12 +181,13 @@ class Distributor(AbstractDistributor):
             if not MPI.Is_initialized():
                 MPI.Init()
 
-                # Make sure Finalize will be called upon exit
-                def finalize_mpi():
-                    MPI.Finalize()
-                atexit.register(finalize_mpi)
-
             self._input_comm = (input_comm or MPI.COMM_WORLD).Clone()
+
+            # Make sure the cloned communicator will be freed up upon exit
+            def cleanup():
+                if self._input_comm is not None:
+                    self._input_comm.Free()
+            atexit.register(cleanup)
 
             # `MPI.Compute_dims` sets the dimension sizes to be as close to each other
             # as possible, using an appropriate divisibility algorithm. Thus, in 3D:
@@ -187,11 +196,7 @@ class Distributor(AbstractDistributor):
             # However, `MPI.Compute_dims` is distro-dependent, so we have to enforce
             # some properties through our own wrapper (e.g., OpenMPI v3 does not
             # guarantee that 9 ranks are arranged into a 3x3 grid when shape=(9, 9))
-            topology = compute_dims(self._input_comm.size, len(shape))
-            # At this point MPI's dimension 0 corresponds to the rightmost element
-            # in `topology`. This is in reverse to `shape`'s ordering. Hence, we
-            # now restore consistency
-            self._topology = tuple(reversed(topology))
+            self._topology = compute_dims(self._input_comm.size, len(shape))
 
             if self._input_comm is not input_comm:
                 # By default, Devito arranges processes into a cartesian topology.
@@ -210,10 +215,6 @@ class Distributor(AbstractDistributor):
         # The domain decomposition
         self._decomposition = [Decomposition(np.array_split(range(i), j), c)
                                for i, j, c in zip(shape, self.topology, self.mycoords)]
-
-    def __del__(self):
-        if self._input_comm is not None:
-            self._input_comm.Free()
 
     @property
     def comm(self):
@@ -368,12 +369,11 @@ class Distributor(AbstractDistributor):
         A CompositeObject describing the calling MPI rank's neighborhood
         in the decomposed grid.
         """
-        entries = list(product([LEFT, CENTER, RIGHT], repeat=self.ndim))
-        fields = [''.join(j.name[0] for j in i) for i in entries]
-        obj = MPINeighborhood(fields)
-        for name, i in zip(fields, entries):
-            setattr(obj.value._obj, name, self.neighborhood[i])
-        return obj
+        return MPINeighborhood(self.neighborhood)
+
+    def _rebuild(self, shape=None, dimensions=None, comm=None):
+        return Distributor(shape or self.shape, dimensions or self.dimensions,
+                           comm or self.comm)
 
 
 class SparseDistributor(AbstractDistributor):
@@ -468,15 +468,35 @@ class MPICommObject(Object):
         comm_val = self.dtype.from_address(comm_ptr)
         self.value = comm_val
 
+    def _arg_values(self, *args, **kwargs):
+        grid = kwargs.get('grid', None)
+        # Update `comm` based on object attached to `grid`
+        if grid is not None:
+            return grid.distributor._obj_comm._arg_defaults()
+        else:
+            return self._arg_defaults()
+
     # Pickling support
     _pickle_args = []
 
 
 class MPINeighborhood(CompositeObject):
 
-    def __init__(self, fields):
-        super(MPINeighborhood, self).__init__('nb', 'neighborhood',
-                                              [(i, c_int) for i in fields])
+    def __init__(self, neighborhood):
+        self._neighborhood = neighborhood
+
+        self._entries = [i for i in neighborhood if isinstance(i, tuple)]
+
+        fields = [(''.join(j.name[0] for j in i), c_int) for i in self.entries]
+        super(MPINeighborhood, self).__init__('nb', 'neighborhood', fields)
+
+    @property
+    def entries(self):
+        return self._entries
+
+    @property
+    def neighborhood(self):
+        return self._neighborhood
 
     @cached_property
     def _C_typedecl(self):
@@ -496,8 +516,22 @@ class MPINeighborhood(CompositeObject):
         return Struct(self.pname, [Value(ctypes_to_cstr(i), ', '.join(j))
                                    for i, j in groups])
 
+    def _arg_defaults(self):
+        values = super(MPINeighborhood, self)._arg_defaults()
+        for name, i in zip(self.fields, self.entries):
+            setattr(values[self.name]._obj, name, self.neighborhood[i])
+        return values
+
+    def _arg_values(self, *args, **kwargs):
+        grid = kwargs.get('grid', None)
+        # Update `nb` based on object attached to `grid`
+        if grid is not None:
+            return grid.distributor._obj_neighborhood._arg_defaults()
+        else:
+            return self._arg_defaults()
+
     # Pickling support
-    _pickle_args = ['fields']
+    _pickle_args = ['neighborhood']
 
 
 def compute_dims(nprocs, ndim):
@@ -510,7 +544,7 @@ def compute_dims(nprocs, ndim):
         v = int(ceil(v))
         if not v**ndim == nprocs:
             # Fallback
-            return MPI.Compute_dims(nprocs, ndim)
+            return tuple(MPI.Compute_dims(nprocs, ndim))
     else:
         v = int(v)
     return tuple(v for _ in range(ndim))

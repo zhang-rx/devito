@@ -2,13 +2,13 @@ import numpy as np
 
 from devito.exceptions import InvalidArgument
 from devito.logger import warning
-from devito.tools import ArgProvider
-from devito.types.basic import AbstractCachedSymbol
+from devito.types.args import ArgProvider
+from devito.types.basic import DataSymbol
 
 __all__ = ['Constant']
 
 
-class Constant(AbstractCachedSymbol, ArgProvider):
+class Constant(DataSymbol, ArgProvider):
 
     """
     Symbol representing a constant, scalar value in symbolic equations.
@@ -44,16 +44,15 @@ class Constant(AbstractCachedSymbol, ArgProvider):
     is_Constant = True
     is_Scalar = True
 
-    def __init__(self, *args, **kwargs):
-        if not self._cached():
-            self._value = kwargs.get('value', 0)
+    def __init_finalize__(self, *args, **kwargs):
+        self._value = kwargs.get('value', 0)
 
     @classmethod
     def __dtype_setup__(cls, **kwargs):
         return kwargs.get('dtype', np.float32)
 
     @property
-    def _is_const(self):
+    def is_const(self):
         return True
 
     @property
@@ -109,4 +108,4 @@ class Constant(AbstractCachedSymbol, ArgProvider):
         except AttributeError:
             pass
 
-    _pickle_kwargs = AbstractCachedSymbol._pickle_kwargs + ['_value']
+    _pickle_kwargs = DataSymbol._pickle_kwargs + ['_value']

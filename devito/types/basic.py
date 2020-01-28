@@ -1,54 +1,63 @@
-import weakref
 import abc
-import gc
 from collections import namedtuple
-from operator import mul
-from functools import reduce
 from ctypes import POINTER, Structure, byref
+from functools import reduce
+from math import ceil
+from operator import mul
 
 import numpy as np
 import sympy
+from sympy.core.assumptions import _assume_rules
 from cached_property import cached_property
 from cgen import Struct, Value
+from frozendict import frozendict
 
 from devito.data import default_allocator
+from devito.parameters import configuration
 from devito.symbolics import Add
-from devito.tools import (ArgProvider, EnrichedTuple, Pickable, ctypes_to_cstr,
-                          dtype_to_cstr, dtype_to_ctype)
+from devito.tools import (EnrichedTuple, Evaluable, Pickable,
+                          ctypes_to_cstr, dtype_to_cstr, dtype_to_ctype)
+from devito.types.args import ArgProvider
+from devito.types.caching import Cached
 
-__all__ = ['Symbol', 'Scalar', 'Array', 'Indexed', 'Object', 'LocalObject',
-           'CompositeObject']
+__all__ = ['Symbol', 'Scalar', 'Array', 'Indexed', 'Object',
+           'LocalObject', 'CompositeObject']
 
-# This cache stores a reference to each created data object
-# so that we may re-create equivalent symbols during symbolic
-# manipulation with the correct shapes, pointers, etc.
-_SymbolCache = {}
+
+Size = namedtuple('Size', 'left right')
+Offset = namedtuple('Offset', 'left right')
 
 
 class Basic(object):
+
     """
-    Three relevant types inherit from this class: ::
+    Three relevant types inherit from this class:
 
         * AbstractSymbol: represents a scalar; may carry data; may be used
                           to build equations.
         * AbstractFunction: represents a discrete R^n -> R function; may
                             carry data; may be used to build equations.
+        * AbstractTensor: represents a discrete 2nd order tensor or vector:
+                          R^n -> R^(nd x nd) tensor (nd dimensions),
+                          R^n -> R^nd vector (nd dimensions),
+                          may carry data; may be used to build equations.
         * AbstractObject: represents a generic object, for example a (pointer
                           to) data structure.
 
-                                        Basic
-                                          |
-                    ------------------------------------------
-                    |                     |                  |
-             AbstractSymbol       AbstractFunction     AbstractObject
+                                            Basic
+                                              |
+              --------------------------------------------------------------
+              |                     |                  |                   |
+        AbstractSymbol      AbstractFunction      AbstractTensor      AbstractObject
 
-    Subtypes must implement a number of methods/properties to enable code
-    generation via the Devito compiler. These methods/properties are easily
-    recognizable as their name starts with _C_.
+    All these subtypes must implement a number of methods/properties to enable
+    code generation via the Devito compiler. These methods/properties are
+    easily recognizable as their name starts with _C_.
 
     Notes
     -----
-    Part of the AbstractFunction sub-hierarchy is implemented in :mod:`function.py`.
+    The AbstractFunction sub-hierarchy is implemented in :mod:`dense.py`.
+    The AbstractTensor sub-hierarchy is implemented in :mod:`tensor.py`.
     """
 
     # Top hierarchy
@@ -76,9 +85,19 @@ class Basic(object):
     is_PrecomputedSparseFunction = False
     is_PrecomputedSparseTimeFunction = False
 
+    # Time dependence
+    is_TimeDependent = False
+
+    # Tensor and Vector valued objects
+    is_VectorValued = False
+    is_TensorValued = False
+
     # Basic symbolic object properties
     is_Scalar = False
     is_Tensor = False
+
+    # Some other properties
+    is_PerfKnob = False  # Does it impact the Operator performance?
 
     @abc.abstractmethod
     def __init__(self, *args, **kwargs):
@@ -143,89 +162,85 @@ class Basic(object):
         return
 
 
-class Cached(object):
+class AbstractSymbol(sympy.Symbol, Basic, Pickable, Evaluable):
+
     """
-    Base class for symbolic objects that cache on the class type.
+    Base class for scalar symbols.
 
-    In order to maintain meta information across the numerous
-    re-instantiation SymPy performs during symbolic manipulation, we inject
-    the symbol name as the class name and cache all created objects on that
-    name. This entails that a symbolic object inheriting from Cached should
-    implement `__init__` in the following way:
-
-        .. code-block::
-            def __init__(self, \*args, \*\*kwargs):
-                if not self._cached():
-                    ... # Initialise object properties from kwargs
-    """
-
-    @classmethod
-    def _cached(cls):
-        """Test if current class is already in the symbol cache."""
-        return cls in _SymbolCache
-
-    @classmethod
-    def _cache_put(cls, obj):
-        """Store given object instance in symbol cache.
-
-        Parameters
-        ----------
-        obj : object
-            Object to be cached.
-        """
-        _SymbolCache[cls] = weakref.ref(obj)
-
-    @classmethod
-    def _symbol_type(cls, name):
-        """Create new type instance from cls and inject symbol name"""
-        return type(name, (cls, ), dict(cls.__dict__))
-
-    def _cached_init(self):
-        """Initialise symbolic object with a cached object state"""
-        original = _SymbolCache[self.__class__]
-        self.__dict__ = original().__dict__
-
-    def __hash__(self):
-        """The hash value of an object that caches on its type is the
-        hash value of the type itself."""
-        return hash(type(self))
-
-
-class AbstractSymbol(sympy.Symbol, Basic, Pickable):
-    """
-    Base class for dimension-free symbols, only cached by SymPy.
-
-    The sub-hierarchy is structured as follows
+    The hierarchy is structured as follows
 
                              AbstractSymbol
                                    |
                  -------------------------------------
                  |                                   |
-        AbstractCachedSymbol                      Dimension
-                 |
-        --------------------
-        |                  |
-     Symbol            Constant
-        |
-     Scalar
+             DataSymbol                            Symbol
+                 |                                   |
+         ----------------                   -------------------
+         |              |                   |                 |
+      Constant   DefaultDimension         Scalar          Dimension
+                                                    <:mod:`dimension.py`>
 
-    There are three relevant AbstractSymbol sub-types: ::
+    All symbols can be used to build equations. However, while DataSymbol
+    carries data, Symbol is a pure symbolic object.
 
-        * Symbol: A generic scalar symbol that can be used to build an equation.
-                  It does not carry data. Typically, Symbols are created internally
-                  by Devito (e.g., for temporary variables)
-        * Constant: A generic scalar symbol that can be used to build an equation.
-                    It carries data (a scalar value).
-        * Dimension: A problem dimension, used to create an iteration space. It
-                     may be used to build equations; typically, it is used as
-                     an index for an Indexed.
+    Constant, DefaultDimension, and Dimension (and most of its subclasses) are
+    part of the user API; Scalar, instead, is only used internally by Devito.
+
+    DefaultDimension and Dimension define a problem dimension (in other words,
+    an "iteration space"). They can be used to index into Functions. For more
+    information, refer to :mod:`dimension.py`.
     """
 
     is_AbstractSymbol = True
+    is_Symbol = True
+
+    @classmethod
+    def _filter_assumptions(cls, **kwargs):
+        """Extract sympy.Symbol-specific kwargs."""
+        assumptions = {}
+        for i in list(kwargs):
+            if i in _assume_rules.defined_facts:
+                assumptions[i] = kwargs.pop(i)
+        return assumptions, kwargs
+
+    def __new__(cls, *args, **kwargs):
+        name = kwargs.get('name') or args[0]
+        assumptions, kwargs = cls._filter_assumptions(**kwargs)
+
+        # Create the new Symbol
+        # Note: use __xnew__ to bypass sympy caching
+        newobj = sympy.Symbol.__xnew__(cls, name, **assumptions)
+
+        # Initialization
+        newobj._dtype = cls.__dtype_setup__(**kwargs)
+        newobj.__init_finalize__(*args, **kwargs)
+
+        return newobj
+
+    @classmethod
+    def __dtype_setup__(cls, **kwargs):
+        """Extract the object data type from ``kwargs``."""
+        return kwargs.get('dtype', np.int32)
+
+    def __init__(self, *args, **kwargs):
+        # no-op, the true init is performed by __init_finalize__
+        pass
+
+    def __init_finalize__(self, *args, **kwargs):
+        self._is_const = kwargs.get('is_const', False)
+
+    @property
+    def dtype(self):
+        """The data type of the object."""
+        return self._dtype
 
     @property
     def indices(self):
         return ()
+
+    @property
+    def dimensions(self):
+        return self.indices
 
     @property
     def shape(self):
@@ -247,8 +262,37 @@ class AbstractSymbol(sympy.Symbol, Basic, Pickable):
     def function(self):
         return self
 
+    @property
+    def evaluate(self):
+        return self
+
     def indexify(self):
         return self
+
+    @property
+    def is_const(self):
+        """
+        True if the symbol value cannot be modified within an Operator (and thus
+        its value is provided by the user directly from Python-land), False otherwise.
+        """
+        return self._is_const
+
+    @property
+    def _C_name(self):
+        return self.name
+
+    @property
+    def _C_typename(self):
+        return '%s%s' % ('const ' if self.is_const else '',
+                         dtype_to_cstr(self.dtype))
+
+    @property
+    def _C_typedata(self):
+        return dtype_to_cstr(self.dtype)
+
+    @property
+    def _C_ctype(self):
+        return dtype_to_ctype(self.dtype)
 
     def _subs(self, old, new, **hints):
         """
@@ -264,96 +308,121 @@ class AbstractSymbol(sympy.Symbol, Basic, Pickable):
 
         return self
 
+    # Pickling support
+    _pickle_args = []
+    _pickle_kwargs = ['name', 'dtype', 'is_const']
+    __reduce_ex__ = Pickable.__reduce_ex__
 
-class AbstractCachedSymbol(AbstractSymbol, Cached):
-    """
-    Base class for dimension-free symbols, cached by both Devito and SymPy.
 
-    For more information, refer to the documentation of AbstractSymbol.
+class Symbol(AbstractSymbol, Cached):
+
     """
+    A scalar symbol, cached by both Devito and SymPy, which does not carry
+    any data.
+
+    Notes
+    -----
+    A Symbol may not be in the SymPy cache, but still be present in the
+    Devito cache. This is because SymPy caches operations, rather than
+    actual objects.
+    """
+
+    @classmethod
+    def _cache_key(cls, *args, **kwargs):
+        args = list(args)
+        key = {}
+
+        # The base type is necessary, otherwise two objects such as
+        # `Scalar(name='s')` and `Dimension(name='s')` would have the same key
+        key['cls'] = cls
+
+        # The name is always present, and added as if it were an arg
+        key['name'] = kwargs.pop('name', None) or args.pop(0)
+
+        # From the args
+        key['args'] = tuple(args)
+
+        # From the kwargs
+        key.update(kwargs)
+
+        return frozendict(key)
 
     def __new__(cls, *args, **kwargs):
-        options = kwargs.get('options', {})
-        if cls in _SymbolCache:
-            newobj = sympy.Symbol.__new__(cls, *args, **options)
-            newobj._cached_init()
-        else:
-            name = kwargs.get('name')
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
 
-            # Create the new Function object and invoke __init__
-            newcls = cls._symbol_type(name)
-            newobj = sympy.Symbol.__new__(newcls, name, *args, **options)
+        if obj is not None:
+            return obj
 
-            # Initialization
-            newobj._dtype = cls.__dtype_setup__(**kwargs)
-            newobj.__init__(*args, **kwargs)
+        # Not in cache. Create a new Symbol via sympy.Symbol
+        name = kwargs.get('name') or args[0]
+        assumptions, kwargs = cls._filter_assumptions(**kwargs)
 
-            # Store new instance in symbol cache
-            newcls._cache_put(newobj)
+        # Note: use __xnew__ to bypass sympy caching
+        newobj = sympy.Symbol.__xnew__(cls, name, **assumptions)
+
+        # Initialization
+        newobj._dtype = cls.__dtype_setup__(**kwargs)
+        newobj.__init_finalize__(*args, **kwargs)
+
+        # Store new instance in symbol cache
+        Cached.__init__(newobj, key)
+
         return newobj
 
     __hash__ = Cached.__hash__
 
+
+class DataSymbol(AbstractSymbol, Cached):
+
+    """
+    A scalar symbol, cached by both Devito and SymPy, which carries data.
+    """
+
     @classmethod
-    def __dtype_setup__(cls, **kwargs):
-        """Extract the object data type from ``kwargs``."""
-        return None
+    def _cache_key(cls, *args, **kwargs):
+        """A DataSymbol caches on the class type itself."""
+        return cls
 
-    @property
-    def dtype(self):
-        """The data type of the object."""
-        return self._dtype
+    def __new__(cls, *args, **kwargs):
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
 
-    @property
-    def _is_const(self):
-        """
-        True if the symbol value cannot be modified within an Operator (and thus
-        its value is provided by the user directly from Python-land), False otherwise.
-        """
-        return False
+        if obj is not None:
+            return obj
 
-    @property
-    def _C_name(self):
-        return self.name
+        # Not in cache. Create a new Symbol via sympy.Symbol
+        name = kwargs.get('name') or args[0]
+        assumptions, kwargs = cls._filter_assumptions(**kwargs)
 
-    @property
-    def _C_typename(self):
-        return '%s%s' % ('const ' if self._is_const else '',
-                         dtype_to_cstr(self.dtype))
+        # Create new, unique type instance from cls and the symbol name
+        newcls = type(name, (cls,), dict(cls.__dict__))
 
-    @property
-    def _C_typedata(self):
-        return dtype_to_cstr(self.dtype)
+        # Create the new Symbol and invoke __init__
+        newobj = sympy.Symbol.__new__(newcls, name, **assumptions)
 
-    @property
-    def _C_ctype(self):
-        return dtype_to_ctype(self.dtype)
+        # Initialization
+        newobj._dtype = cls.__dtype_setup__(**kwargs)
+        newobj.__init_finalize__(*args, **kwargs)
+
+        # Store new instance in symbol cache
+        Cached.__init__(newobj, newcls)
+
+        return newobj
+
+    __hash__ = Cached.__hash__
 
     # Pickling support
-    _pickle_kwargs = ['name', 'dtype']
-    __reduce_ex__ = Pickable.__reduce_ex__
 
     @property
     def _pickle_reconstruct(self):
         return self.__class__.__base__
 
 
-class Symbol(AbstractCachedSymbol):
+class Scalar(Symbol, ArgProvider):
 
     """
-    Like a sympy.Symbol, but with an API mimicking that of a sympy.Indexed.
-    """
-
-    is_Symbol = True
-
-    @classmethod
-    def __dtype_setup__(cls, **kwargs):
-        return kwargs.get('dtype', np.int32)
-
-
-class Scalar(Symbol):
-    """
-    Symbol representing a scalar.
+    Like a Symbol, but in addition it can pass runtime values to an Operator.
 
     Parameters
     ----------
@@ -362,36 +431,136 @@ class Scalar(Symbol):
     dtype : data-type, optional
         Any object that can be interpreted as a numpy data type. Defaults
         to ``np.float32``.
+    is_const : bool, optional
+        True if the symbol value cannot be modified within an Operator,
+        False otherwise. Defaults to False.
+    **assumptions
+        Any SymPy assumptions, such as ``nonnegative=True``. Refer to the
+        SymPy documentation for more information.
     """
 
     is_Scalar = True
-
-    def __init__(self, *args, **kwargs):
-        if not self._cached():
-            self.__is_const = kwargs.get('is_const', kwargs.get('_is_const', False))
 
     @classmethod
     def __dtype_setup__(cls, **kwargs):
         return kwargs.get('dtype', np.float32)
 
-    @property
-    def _is_const(self):
-        return self.__is_const
 
-    # Pickling support
-    _pickle_kwargs = AbstractCachedSymbol._pickle_kwargs + ['_is_const']
-
-
-class AbstractFunction(sympy.Function, Basic, Pickable):
+class AbstractTensor(sympy.ImmutableDenseMatrix, Basic, Cached, Pickable, Evaluable):
     """
-    Base class for tensor symbols, only cached by SymPy. It inherits from and
-    mimick the behaviour of a sympy.Function.
+    Base class for vector and tensor valued functions. It inherits from and
+    mimicks the behavior of a sympy.ImmutableDenseMatrix.
 
-    The sub-hierarchy is structured as follows
+
+    The sub-hierachy is as follows
+
+                         AbstractTensor
+                                |
+                          TensorFunction
+                                |
+                 ---------------------------------
+                 |                               |
+          VectorFunction                 TensorTimeFunction
+                        \-------\                |
+                                 \------- VectorTimeFunction
+
+    There are four relevant AbstractTensor sub-types: ::
+
+        * TensorFunction: A space-varying tensor valued function
+        * VectorFunction: A space-varying vector valued function
+        * TensorTimeFunction: A time-space-varying tensor valued function
+        * VectorTimeFunction: A time-space-varying vector valued function
+    """
+    # Sympy attributes
+    is_MatrixLike = True
+    is_Matrix = True
+
+    # Devito attributes
+    is_AbstractTensor = True
+    is_TensorValued = True
+    is_VectorValued = False
+
+    @classmethod
+    def _cache_key(cls, *args, **kwargs):
+        """An AbstractTensor caches on the class type itself."""
+        return cls
+
+    def __new__(cls, *args, **kwargs):
+        options = kwargs.get('options', {})
+
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
+
+        if obj is not None:
+            newobj = sympy.Matrix.__new__(cls, *args, **options)
+            newobj.__init_cached__(key)
+            return newobj
+
+        name = kwargs.get('name')
+        # Number of dimensions
+        indices, _ = cls.__indices_setup__(**kwargs)
+
+        # Create new, unique type instance from cls and the symbol name
+        newcls = type(name, (cls,), dict(cls.__dict__))
+
+        # Create the new Function object and invoke __init__
+        comps = cls.__subfunc_setup__(*args, **kwargs)
+        newobj = sympy.ImmutableDenseMatrix.__new__(newcls, comps)
+        # Initialization. The following attributes must be available
+        newobj._indices = indices
+        newobj._name = name
+        newobj._dtype = cls.__dtype_setup__(**kwargs)
+        newobj.__init_finalize__(*args, **kwargs)
+
+        # Store new instance in symbol cache
+        Cached.__init__(newobj, newcls)
+        return newobj
+
+    __hash__ = Cached.__hash__
+
+    def __init_finalize__(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def __dtype_setup__(cls, **kwargs):
+        """Extract the object data type from ``kwargs``."""
+        return None
+
+    @classmethod
+    def __subfunc_setup__(cls, *args, **kwargs):
+        """Setup each component of the tensor as a Devito type."""
+        return []
+
+    @classmethod
+    def __indices_setup__(cls, *args, **kwargs):
+        """Extract the object indices from ``kwargs``."""
+        return (), ()
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    @classmethod
+    def _new2(cls, *args, **kwargs):
+        """Bypass sympy `_new` that hard codes `Matrix.__new__` to call our own."""
+        return cls.__new__(cls, *args, **kwargs)
+
+    def applyfunc(self, f):
+        return self._new2(self.rows, self.cols, [f(x) for x in self])
+
+
+class AbstractFunction(sympy.Function, Basic, Cached, Pickable, Evaluable):
+    """
+    Base class for tensor symbols, cached by both SymPy and Devito. It inherits
+    from and mimicks the behaviour of a sympy.Function.
+
+    The hierarchy is structured as follows
 
                          AbstractFunction
-                                |
-                      AbstractCachedFunction
                                 |
                  ---------------------------------
                  |                               |
@@ -430,58 +599,65 @@ class AbstractFunction(sympy.Function, Basic, Pickable):
 
     is_AbstractFunction = True
 
-
-class AbstractCachedFunction(AbstractFunction, Cached):
-    """
-    Base class for tensor symbols, cached by both Devito and Sympy.
-
-    For more information, refer to ``AbstractFunction.__doc__``.
-    """
+    @classmethod
+    def _cache_key(cls, *args, **kwargs):
+        """An AbstractFunction caches on the class type itself."""
+        return cls
 
     def __new__(cls, *args, **kwargs):
         options = kwargs.get('options', {})
-        if cls in _SymbolCache:
+
+        key = cls._cache_key(*args, **kwargs)
+        obj = cls._cache_get(key)
+
+        if obj is not None:
             newobj = sympy.Function.__new__(cls, *args, **options)
-            newobj._cached_init()
-        else:
-            name = kwargs.get('name')
-            indices = cls.__indices_setup__(**kwargs)
+            newobj.__init_cached__(key)
+            return newobj
 
-            # Create the new Function object and invoke __init__
-            newcls = cls._symbol_type(name)
-            newobj = sympy.Function.__new__(newcls, *indices, **options)
+        # Not in cache. Create a new Function via sympy.Function
+        name = kwargs.get('name')
+        dimensions, indices = cls.__indices_setup__(**kwargs)
 
-            # Initialization. The following attributes must be available
-            # when executing __init__
-            newobj._name = name
-            newobj._indices = indices
-            newobj._shape = cls.__shape_setup__(**kwargs)
-            newobj._dtype = cls.__dtype_setup__(**kwargs)
-            newobj.__init__(*args, **kwargs)
+        # Create new, unique type instance from cls and the symbol name
+        newcls = type(name, (cls,), dict(cls.__dict__))
 
-            # All objects cached on the AbstractFunction /newobj/ keep a reference
-            # to /newobj/ through the /function/ field. Thus, all indexified
-            # object will point to /newobj/, the "actual Function".
-            newobj.function = newobj
+        # Create the new Function object and invoke __init__
+        newobj = sympy.Function.__new__(newcls, *indices, **options)
 
-            # Store new instance in symbol cache
-            newcls._cache_put(newobj)
+        # Initialization. The following attributes must be available
+        # when executing __init_finalize__
+        newobj._name = name
+        newobj._dimensions = dimensions
+        newobj._shape = cls.__shape_setup__(**kwargs)
+        newobj._dtype = cls.__dtype_setup__(**kwargs)
+        newobj.__init_finalize__(*args, **kwargs)
+
+        # All objects cached on the AbstractFunction `newobj` keep a reference
+        # to `newobj` through the `function` field. Thus, all indexified
+        # object will point to `newobj`, the "actual Function".
+        newobj.function = newobj
+
+        # Store new instance in symbol cache
+        Cached.__init__(newobj, newcls)
         return newobj
 
     def __init__(self, *args, **kwargs):
-        if not self._cached():
-            # Setup halo and padding regions
-            self._is_halo_dirty = False
-            self._in_flight = []
-            self._halo = self.__halo_setup__(**kwargs)
-            self._padding = self.__padding_setup__(**kwargs)
+        # no-op, the true init is performed by __init_finalize__
+        pass
+
+    def __init_finalize__(self, *args, **kwargs):
+        # Setup halo and padding regions
+        self._is_halo_dirty = False
+        self._halo = self.__halo_setup__(**kwargs)
+        self._padding = self.__padding_setup__(**kwargs)
 
     __hash__ = Cached.__hash__
 
     @classmethod
     def __indices_setup__(cls, **kwargs):
         """Extract the object indices from ``kwargs``."""
-        return ()
+        return (), ()
 
     @classmethod
     def __shape_setup__(cls, **kwargs):
@@ -494,10 +670,20 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         return None
 
     def __halo_setup__(self, **kwargs):
-        return kwargs.get('halo', tuple((0, 0) for i in range(self.ndim)))
+        return tuple(kwargs.get('halo', [(0, 0) for i in range(self.ndim)]))
 
     def __padding_setup__(self, **kwargs):
-        return kwargs.get('padding', tuple((0, 0) for i in range(self.ndim)))
+        return tuple(kwargs.get('padding', [(0, 0) for i in range(self.ndim)]))
+
+    @cached_property
+    def _honors_autopadding(self):
+        """
+        True if the actual padding is greater or equal than whatever autopadding
+        would produce, False otherwise.
+        """
+        autopadding = self.__padding_setup__(autopadding=True)
+        return all(l0 >= l1 and r0 >= r1
+                   for (l0, r0), (l1, r1) in zip(self.padding, autopadding))
 
     @property
     def name(self):
@@ -507,12 +693,46 @@ class AbstractCachedFunction(AbstractFunction, Cached):
     @property
     def indices(self):
         """The indices (aka dimensions) of the object."""
-        return self._indices
+        return self.args
+
+    @property
+    def indices_ref(self):
+        """The reference indices of the object (indices at first creation)."""
+        return EnrichedTuple(*self.function.indices, getters=self.dimensions)
+
+    @property
+    def origin(self):
+        """
+        Origin of the AbstractFunction in term of Dimension
+        f(x) : origin = 0
+        f(x + hx/2) : origin = hx/2
+        """
+        return tuple(r - d for d, r in zip(self.dimensions, self.indices_ref))
 
     @property
     def dimensions(self):
         """Tuple of Dimensions representing the object indices."""
-        return self.indices
+        return self._dimensions
+
+    @property
+    def evaluate(self):
+        # Average values if at a location not on the Function's grid
+        weight = 1.0
+        avg_list = [self]
+        is_averaged = False
+        for i, ir, d in zip(self.indices, self.indices_ref, self.dimensions):
+            off = (i - ir)/d.spacing
+            if not isinstance(off, sympy.Number) or int(off) == off:
+                pass
+            else:
+                weight *= 1/2
+                is_averaged = True
+                avg_list = [a.subs({i: i - d.spacing/2}) + a.subs({i: i + d.spacing/2})
+                            for a in avg_list]
+
+        if not is_averaged:
+            return self
+        return weight * sum(avg_list)
 
     @property
     def shape(self):
@@ -538,7 +758,7 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         """
         halo = [Add(*i) for i in self._size_halo]
         padding = [Add(*i) for i in self._size_padding]
-        domain = [i.symbolic_size for i in self.indices]
+        domain = [i.symbolic_size for i in self.dimensions]
         ret = tuple(Add(i, j, k) for i, j, k in zip(domain, halo, padding))
         return EnrichedTuple(*ret, getters=self.dimensions)
 
@@ -588,7 +808,7 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         return self._padding
 
     @property
-    def _is_const(self):
+    def is_const(self):
         """
         True if the carried data values cannot be modified within an Operator,
         False otherwise.
@@ -614,7 +834,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(zip(*self._halo))[0]
         right = tuple(zip(*self._halo))[1]
 
-        Size = namedtuple('Size', 'left right')
         sizes = tuple(Size(i, j) for i, j in self._halo)
 
         return EnrichedTuple(*sizes, getters=self.dimensions, left=left, right=right)
@@ -625,7 +844,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(self._size_halo.right)
         right = tuple(self._size_halo.left)
 
-        Size = namedtuple('Size', 'left right')
         sizes = tuple(Size(i.right, i.left) for i in self._size_halo)
 
         return EnrichedTuple(*sizes, getters=self.dimensions, left=left, right=right)
@@ -636,7 +854,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(zip(*self._padding))[0]
         right = tuple(zip(*self._padding))[1]
 
-        Size = namedtuple('Size', 'left right')
         sizes = tuple(Size(i, j) for i, j in self._padding)
 
         return EnrichedTuple(*sizes, getters=self.dimensions, left=left, right=right)
@@ -653,7 +870,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(i for i, _ in np.add(self._halo, self._padding))
         right = tuple(i for _, i in np.add(self._halo, self._padding))
 
-        Size = namedtuple('Size', 'left right')
         sizes = tuple(Size(i, j) for i, j in np.add(self._halo, self._padding))
 
         return EnrichedTuple(*sizes, getters=self.dimensions, left=left, right=right)
@@ -670,7 +886,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(self._size_padding.left)
         right = tuple(np.add(np.add(left, self._size_halo.left), self._size_domain))
 
-        Offset = namedtuple('Offset', 'left right')
         offsets = tuple(Offset(i, j) for i, j in zip(left, right))
 
         return EnrichedTuple(*offsets, getters=self.dimensions, left=left, right=right)
@@ -681,7 +896,6 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         left = tuple(self._offset_domain)
         right = tuple(np.add(self._offset_halo.left, self._size_domain))
 
-        Offset = namedtuple('Offset', 'left right')
         offsets = tuple(Offset(i, j) for i, j in zip(left, right))
 
         return EnrichedTuple(*offsets, getters=self.dimensions, left=left, right=right)
@@ -700,7 +914,7 @@ class AbstractCachedFunction(AbstractFunction, Cached):
             return Indexed(self.indexed, *indices)
 
         # Get spacing symbols for replacement
-        spacings = [i.spacing for i in self.indices]
+        spacings = [i.spacing for i in self.dimensions]
 
         # Only keep the ones used as indices.
         spacings = [s for i, s in enumerate(spacings)
@@ -710,7 +924,7 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         subs = dict([(s, 1) for s in spacings])
 
         # Indices after substitutions
-        indices = [a.subs(subs) for a in self.args]
+        indices = [(a - o).subs(subs) for a, o in zip(self.args, self.origin)]
 
         return Indexed(self.indexed, *indices)
 
@@ -727,7 +941,7 @@ class AbstractCachedFunction(AbstractFunction, Cached):
         return self.__class__.__base__
 
 
-class Array(AbstractCachedFunction):
+class Array(AbstractFunction):
     """
     Tensor symbol representing an array in symbolic equations.
 
@@ -762,18 +976,50 @@ class Array(AbstractCachedFunction):
 
     def __new__(cls, *args, **kwargs):
         kwargs.update({'options': {'evaluate': False}})
-        return AbstractCachedFunction.__new__(cls, *args, **kwargs)
+        return AbstractFunction.__new__(cls, *args, **kwargs)
 
-    def __init__(self, *args, **kwargs):
-        if not self._cached():
-            super(Array, self).__init__(*args, **kwargs)
+    def __init_finalize__(self, *args, **kwargs):
+        super(Array, self).__init_finalize__(*args, **kwargs)
 
-            self._scope = kwargs.get('scope', 'heap')
-            assert self._scope in ['heap', 'stack']
+        self._scope = kwargs.get('scope', 'heap')
+        assert self._scope in ['heap', 'stack']
+
+    def __padding_setup__(self, **kwargs):
+        padding = kwargs.get('padding')
+        if padding is None:
+            padding = [(0, 0) for _ in range(self.ndim)]
+            if kwargs.get('autopadding', configuration['autopadding']):
+                # Heuristic 1; Arrays are typically introduced for DSE-produced
+                # temporaries, and are almost always used together with loop
+                # blocking.  Since the typical block size is a multiple of the SIMD
+                # vector length, `vl`, padding is made such that the NODOMAIN size
+                # is a multiple of `vl` too
+
+                # Heuristic 2: the right-NODOMAIN size is not only a multiple of
+                # `vl`, but also guaranteed to be *at least* greater or equal than
+                # `vl`, so that the compiler can tweak loop trip counts to maximize
+                # the effectiveness of SIMD vectorization
+
+                # Let UB be a function that rounds up a value `x` to the nearest
+                # multiple of the SIMD vector length
+                vl = configuration['platform'].simd_items_per_reg(self.dtype)
+                ub = lambda x: int(ceil(x / vl)) * vl
+
+                fvd_halo_size = sum(self.halo[-1])
+                fvd_pad_size = (ub(fvd_halo_size) - fvd_halo_size) + vl
+
+                padding[-1] = (0, fvd_pad_size)
+            return tuple(padding)
+        elif isinstance(padding, int):
+            return tuple((0, padding) for _ in range(self.ndim))
+        elif isinstance(padding, tuple) and len(padding) == self.ndim:
+            return tuple((0, i) if isinstance(i, int) else i for i in padding)
+        else:
+            raise TypeError("`padding` must be int or %d-tuple of ints" % self.ndim)
 
     @classmethod
     def __indices_setup__(cls, **kwargs):
-        return tuple(kwargs['dimensions'])
+        return tuple(kwargs['dimensions']), tuple(kwargs['dimensions'])
 
     @classmethod
     def __dtype_setup__(cls, **kwargs):
@@ -799,9 +1045,13 @@ class Array(AbstractCachedFunction):
     def _C_typename(self):
         return ctypes_to_cstr(POINTER(dtype_to_ctype(self.dtype)))
 
+    @property
+    def free_symbols(self):
+        return super().free_symbols - {d for d in self.dimensions if d.is_Default}
+
     def update(self, **kwargs):
         self._shape = kwargs.get('shape', self.shape)
-        self._indices = kwargs.get('dimensions', self.indices)
+        self._dimensions = kwargs.get('dimensions', self.dimensions)
         self._dtype = kwargs.get('dtype', self.dtype)
         self._halo = kwargs.get('halo', self._halo)
         self._padding = kwargs.get('padding', self._padding)
@@ -809,7 +1059,7 @@ class Array(AbstractCachedFunction):
         assert self._scope in ['heap', 'stack']
 
     # Pickling support
-    _pickle_kwargs = AbstractCachedFunction._pickle_kwargs + ['dimensions', 'scope']
+    _pickle_kwargs = AbstractFunction._pickle_kwargs + ['dimensions', 'scope']
 
 
 # Objects belonging to the Devito API not involving data, such as data structures
@@ -857,6 +1107,10 @@ class AbstractObject(Basic, sympy.Basic, Pickable):
     def _C_ctype(self):
         return self.dtype
 
+    @property
+    def function(self):
+        return self
+
     # Pickling support
     _pickle_args = ['name', 'dtype']
     __reduce_ex__ = Pickable.__reduce_ex__
@@ -884,11 +1138,21 @@ class Object(AbstractObject, ArgProvider):
         else:
             return {self.name: self.value}
 
-    def _arg_values(self, **kwargs):
+    def _arg_values(self, args=None, **kwargs):
+        """
+        Produce runtime values for this Object after evaluating user input.
+
+        Parameters
+        ----------
+        args : dict, optional
+            Known argument values.
+        **kwargs
+            Dictionary of user-provided argument overrides.
+        """
         if self.name in kwargs:
             return {self.name: kwargs.pop(self.name)}
         else:
-            return {}
+            return self._arg_defaults()
 
 
 class CompositeObject(Object):
@@ -959,6 +1223,9 @@ class IndexedData(sympy.IndexedBase, Pickable):
     """
 
     def __new__(cls, label, shape=None, function=None):
+        # Make sure `label` is a devito.Symbol, not a sympy.Symbol
+        if isinstance(label, str):
+            label = Symbol(name=label, dtype=function.dtype)
         obj = sympy.IndexedBase.__new__(cls, label, shape)
         obj.function = function
         return obj
@@ -988,6 +1255,8 @@ class Indexed(sympy.Indexed):
     is_Symbol = False
     is_Atom = False
 
+    is_Dimension = False
+
     def _hashable_content(self):
         return super(Indexed, self)._hashable_content() + (self.base.function,)
 
@@ -1003,20 +1272,6 @@ class Indexed(sympy.Indexed):
     def name(self):
         return self.function.name
 
-# Utilities
-
-
-class CacheManager(object):
-
-    """
-    Drop unreferenced objects from the SymPy and Devito caches. The associated
-    data is lost (and thus memory is freed).
-    """
-
-    @classmethod
-    def clear(cls):
-        sympy.cache.clear_cache()
-        gc.collect()
-        for key, val in list(_SymbolCache.items()):
-            if val() is None:
-                del _SymbolCache[key]
+    @property
+    def origin(self):
+        return self.function.origin

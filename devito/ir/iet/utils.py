@@ -2,7 +2,7 @@ from collections import OrderedDict
 
 from devito.ir.iet import (Iteration, List, IterationTree, FindSections, FindSymbols,
                            FindNodes, Section, Expression)
-from devito.symbolics import Macro
+from devito.symbolics import Literal, Macro
 from devito.tools import flatten, ReducerMap
 from devito.types import Array, LocalObject
 
@@ -12,7 +12,7 @@ __all__ = ['filter_iterations', 'retrieve_iteration_tree',
 
 def retrieve_iteration_tree(node, mode='normal'):
     """
-    A list with all :class:`Iteration` sub-trees within an IET.
+    A list with all Iteration sub-trees within an IET.
 
     Examples
     --------
@@ -55,44 +55,17 @@ def retrieve_iteration_tree(node, mode='normal'):
         return IterationTree(match)
 
 
-def filter_iterations(tree, key=lambda i: i, stop=lambda: False):
+def filter_iterations(tree, key=lambda i: i):
     """
-    Given an iterable of :class:`Iteration`s, produce a list containing
-    all Iterations such that ``key(iteration)`` is True.
-
-    This function accepts an optional argument ``stop``. This may be either a
-    lambda function, specifying a stop criterium, or any of the following
-    special keywords: ::
-
-        * 'any': Return as soon as ``key(o)`` is False and at least one
-                 item has been collected.
-        * 'asap': Return as soon as at least one item has been collected and
-                  all items for which ``key(o)`` is False have been encountered.
-
-    It is useful to specify a ``stop`` criterium when one is searching the
-    first Iteration in an Iteration/Expression tree which does not honour a
-    given property.
+    Return the first sub-sequence of consecutive Iterations such that
+    ``key(iteration)`` is True.
     """
-    assert callable(stop) or stop in ['any', 'asap']
-
-    tree = list(tree)
     filtered = []
-    off = []
-
-    if stop == 'any':
-        stop = lambda: len(filtered) > 0
-    elif stop == 'asap':
-        hits = [i for i in tree if not key(i)]
-        stop = lambda: len(filtered) > 0 and len(off) == len(hits)
-
     for i in tree:
         if key(i):
             filtered.append(i)
-        else:
-            off.append(i)
-        if stop():
+        elif len(filtered) > 0:
             break
-
     return filtered
 
 
@@ -137,7 +110,7 @@ def derive_parameters(nodes, drop_locals=False):
     parameters = tuple(s for s in symbols if s.name not in defines)
 
     # Drop globally-visible objects
-    parameters = [p for p in parameters if not isinstance(p, Macro)]
+    parameters = [p for p in parameters if not isinstance(p, (Literal, Macro))]
 
     # Filter out locally-allocated Arrays and Objects
     if drop_locals:
