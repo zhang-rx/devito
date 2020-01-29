@@ -2,11 +2,11 @@ from __future__ import division
 
 import numpy as np
 
-from devito import Dimension, Function, SubDimension, Eq, first_derivative
+from devito import Dimension, Function, SubDimension, Eq, first_derivative, solve
 from devito.exceptions import InvalidArgument
 from devito.finite_differences.finite_difference import transpose
 
-from sympy import sqrt, solve, finite_diff_weights
+from sympy import sqrt, finite_diff_weights, symbols
 
 __all__ = ['ABC', 'Clayton']
 
@@ -23,7 +23,7 @@ class ABC(object):
     """
 
     def __init__(self, model, field, forward=True, **kwargs):
-        self.nbpml = int(model.nbpml)
+        self.nbl = int(model.nbl)
         self.full_shape = model.domain_size
         self.ndim = model.dim
         self.indices = field.grid.dimensions
@@ -42,13 +42,15 @@ class ABC(object):
         # Define time sep to be updated
         next = self.field.forward if self.forward else self.field.backward
         # Define PDE
-        eta = self.damp_profile_init(abc_dim, left=left)
-        eq = self.m * self.field.dt2 - self.field.laplace
-        eq += eta * self.field.dt if self.forward else -eta * self.field.dt
+        eta0, H = symbols('e h')
+        eq = self.m * self.field.dt2 - H
+        eq += eta0 * self.field.dt if self.forward else -eta0 * self.field.dt
         # Solve the symbolic equation for the field to be updated
-        eq_time = solve(eq, next, rational=False, simplify=False)[0]
+        eq_time = solve(eq, next)
+        eta = self.damp_profile_init(abc_dim, left=left)
+        eq_time = eq_time.subs({eta0: eta, H: self.field.laplace})
         # return the Stencil with H replaced by its symbolic expression
-        return Eq(next, eq_time).subs({abc_dim.parent: abc_dim})
+        return Eq(next, eq_time, subs={abc_dim.parent: abc_dim})
 
 
     @property
@@ -58,10 +60,10 @@ class ABC(object):
         :return: Symbolic equation of the free surface
         """
         dim = self.field.indices[-1]
-        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
-        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbl)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbl)
         next = self.field.forward if self.forward else self.field.backward
-        return [Eq(next.subs({dim: dim_abc_left}), - next.subs({dim: 2*self.nbpml - dim_abc_left})),
+        return [Eq(next.subs({dim: dim_abc_left}), - next.subs({dim: 2*self.nbl - dim_abc_left})),
                 self.abc_eq(dim_abc_right, left=False)]
 
     @property
@@ -84,12 +86,12 @@ class ABC(object):
         Dampening profile along a single direction
         :return:
         """
-        positions = np.linspace(1.0, 0.0, self.nbpml) if left else np.linspace(0.0, 1.0, self.nbpml)
-        coeff = 1.5 * np.log(1.0 / 0.001) / (40.)
+        positions = np.linspace(1.0, 0.0, self.nbl) if left else np.linspace(0.0, 1.0, self.nbl)
+        coeff = .2 * np.log(1.0 / 0.001) / (40.)
         profile = [coeff * (pos - np.sin(2*np.pi*pos)/(2*np.pi)) for pos in positions]
-        damp = Function(name="damp" + abc_dim.name, shape=(self.nbpml,), dimensions=(abc_dim,), dtype=np.float32, space_order=0)
-        damp.data[:] = damp.dtype(profile / self.field.grid.spacing[0])
-        return damp.subs({damp.indices[0]: damp.indices[0]- damp.indices[0].symbolic_start})
+        eta = Function(name="eta" + abc_dim.name, shape=(self.nbl,), dimensions=(abc_dim,), dtype=np.float32, space_order=0)
+        eta.data[:] = eta.dtype(profile)
+        return eta.subs({eta.indices[0]: eta.indices[0]- eta.indices[0].symbolic_min})
 
     @property
     def damp_x(self):
@@ -98,8 +100,8 @@ class ABC(object):
         :return:
         """
         dim = self.indices[0]
-        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
-        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbl)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbl)
         return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
     @property
@@ -109,8 +111,8 @@ class ABC(object):
         :return:
         """
         dim = self.indices[1]
-        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
-        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbl)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbl)
         return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
     @property
@@ -120,8 +122,8 @@ class ABC(object):
         :return:
         """
         dim = self.indices[2]
-        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbpml)
-        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbpml)
+        dim_abc_left = SubDimension.left(name='abc_'+ dim.name + '_left', parent=dim, thickness=self.nbl)
+        dim_abc_right = SubDimension.right(name='abc_'+ dim.name + '_right', parent=dim, thickness=self.nbl)
         return [self.abc_eq(dim_abc_left), self.abc_eq(dim_abc_right, left=False)]
 
     @property
@@ -153,7 +155,7 @@ class Clayton(object):
         """
 
         def __init__(self, model, field, forward=True, **kwargs):
-            self.nbpml = int(model.nbpml)
+            self.nbl = int(model.nbl)
             self.full_shape = model.domain_size
             self.ndim = model.dim
             self.indices = field.grid.dimensions
@@ -171,8 +173,8 @@ class Clayton(object):
                 bcs += self.Clayton_single(dim, "right")
             if self.freesurface:
                 next = self.field.forward if self.forward else self.field.backward
-                subdim = SubDimension.left(name=self.indices[-1].name+"_fs", parent=self.indices[-1], thickness=self.nbpml)
-                bcs += [Eq(next.subs({self.indices[-1]: subdim}), - next.subs({self.indices[-1]: 2*self.nbpml - subdim}))]
+                subdim = SubDimension.left(name=self.indices[-1].name+"_fs", parent=self.indices[-1], thickness=self.nbl)
+                bcs += [Eq(next.subs({self.indices[-1]: subdim}), - next.subs({self.indices[-1]: 2*self.nbl - subdim}))]
                 bcs += self.Clayton_single(self.indices[-1], "right")
             else:
                 bcs += self.Clayton_single(self.indices[-1], "left")
@@ -182,11 +184,11 @@ class Clayton(object):
         def Clayton_single(self, dim, side):
             if side == "left":
                 sign = 1
-                subdim = SubDimension.left(name=dim.name+"_"+ side, parent=dim, thickness=self.nbpml)
+                subdim = SubDimension.left(name=dim.name+"_"+ side, parent=dim, thickness=self.nbl)
                 # pxt - 1/v*ptt + v/2 * pyy
             elif side == "right":
                 sign = -1
-                subdim = SubDimension.right(name=dim.name+"_" + side, parent=dim, thickness=self.nbpml)
+                subdim = SubDimension.right(name=dim.name+"_" + side, parent=dim, thickness=self.nbl)
                 # pxt + 1/v*ptt - v/2*pyy
             else:
                 raise Exception("pick a side, 'left' or 'right'")
@@ -214,7 +216,7 @@ class Clayton(object):
             Dampening profile along a single direction
             :return:
             """
-            positions = np.linspace(.7, 0.2, self.nbpml) if left=="left" else np.linspace(0.2, .7, self.nbpml)
-            damp = Function(name="damp" + abc_dim.name, shape=(self.nbpml,), dimensions=(abc_dim,), dtype=np.float32, space_order=0)
+            positions = np.linspace(.7, 0.2, self.nbl) if left=="left" else np.linspace(0.2, .7, self.nbl)
+            damp = Function(name="damp" + abc_dim.name, shape=(self.nbl,), dimensions=(abc_dim,), dtype=np.float32, space_order=0)
             damp.data[:] = positions**2
             return damp.subs({damp.indices[0]: damp.indices[0]- damp.indices[0].symbolic_start})

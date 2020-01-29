@@ -1,19 +1,8 @@
 from sympy import Symbol
 
-from devito import Eq, Operator, Function, TimeFunction, SubDimension, Inc, solve
+from devito import Eq, Operator, Function, TimeFunction, Inc, solve
 from examples.seismic import PointSource, Receiver, ABC, Clayton
 
-
-def inner_ind(model):
-    """
-    Dimensions of the inner part of the domain without ABC layers
-    """
-    sub_dim =[]
-    for dim in model.grid.dimensions:
-        sub_dim += [SubDimension.middle(name=dim.name + '_in', parent=dim,
-                                 thickness_left=model.nbpml, thickness_right=model.nbpml)]
-
-    return tuple(sub_dim)
 
 def laplacian(field, m, s, kernel):
     """
@@ -64,8 +53,6 @@ def iso_stencil(field, kernel, model, s, **kwargs):
     next = field.forward if kwargs.get('forward', True) else field.backward
     # Define PDE
     eq = model.m * field.dt2 - H - kwargs.get('q', 0)
-    # Add dampening field according to the propagation direction
-    eq += damp * field.dt if kwargs.get('forward', True) else damp * field.dt.T
 
     # Solve the symbolic equation for the field to be updated
     eq_time = solve(eq, next)
@@ -73,8 +60,7 @@ def iso_stencil(field, kernel, model, s, **kwargs):
     # Get the spacial FD
     lap = laplacian(field, model.m, s, kernel)
     # return the Stencil with H replaced by its symbolic expression
-    inner = [(i, i_in) for i, i_in in zip(model.grid.dimensions, inner_ind(model))]
-    return [Eq(next, eq_time.subs({H: lap})).subs(inner)]
+    return [Eq(next, eq_time.subs({H: lap}), subdomain=model.grid.subdomains['phydomain'])]
 
 
 def ForwardOperator(model, geometry, space_order=4,
@@ -203,13 +189,7 @@ def GradientOperator(model, geometry, space_order=4, save=True,
     if kernel == 'OT2':
         gradient_update = Inc(grad, - u.dt2 * v)
     elif kernel == 'OT4':
-<<<<<<< HEAD
-        gradient_update = Eq(grad, grad - (u.dt2 +
-                                           s**2 / 12.0 * u.laplace2(model.m**(-2))) * v)
-
-=======
         gradient_update = Inc(grad, - (u.dt2 + s**2 / 12.0 * u.biharmonic(m**(-2))) * v)
->>>>>>> origin/master
     # Add expression for receiver injection
     receivers = rec.inject(field=v.backward, expr=rec * s**2 / model.m)
     BC = ABC(model, v, forward=False)

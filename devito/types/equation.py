@@ -60,13 +60,14 @@ class Eq(sympy.Eq, Evaluable):
     is_Increment = False
 
     def __new__(cls, lhs, rhs=0, subdomain=None, coefficients=None, implicit_dims=None,
-                **kwargs):
+                subs=None, **kwargs):
         kwargs['evaluate'] = False
         obj = sympy.Eq.__new__(cls, lhs, rhs, **kwargs)
         obj._subdomain = subdomain
         obj._substitutions = coefficients
         obj._implicit_dims = as_tuple(implicit_dims)
-
+        # Substitutions for after evalautation
+        obj._subs = subs or {}
         return obj
 
     @property
@@ -85,6 +86,7 @@ class Eq(sympy.Eq, Evaluable):
             lhs, rhs = self.lhs.evaluate, self.rhs._eval_at(self.lhs).evaluate
         except AttributeError:
             lhs, rhs = self._evaluate_args()
+        lhs, rhs = lhs.subs(self._subs), rhs.subs(self._subs)
         eq = self.func(lhs, rhs, subdomain=self.subdomain,
                        coefficients=self.substitutions,
                        implicit_dims=self._implicit_dims)
@@ -231,7 +233,7 @@ def solve(eq, target, **kwargs):
     kwargs['manual'] = True  # Force sympy to solve one line at a time for VectorFunction
     if isinstance(eq, Eq):
         eq = eq.lhs - eq.rhs if eq.rhs != 0 else eq.lhs
-    sol = sympy.solve(eq.evaluate, target.evaluate, **kwargs)[0]
+    sol = list(sympy.solveset(eq.evaluate, target.evaluate))[0]
 
     # We need to rebuild the vector/tensor as sympy.solve outputs a tuple of solutions
     from devito.types import TensorFunction

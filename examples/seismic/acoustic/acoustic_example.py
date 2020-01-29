@@ -50,13 +50,7 @@ def run(shape=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
     save = full_run and not checkpointing
     # Define receiver geometry (spread across x, just below surface)
     rec, u, summary = solver.forward(save=save, autotune=autotune)
-    import matplotlib.pyplot as plt
 
-    plt.figure()
-    plt.imshow(rec.data[:, :], vmin=-1, vmax=1, cmap="seismic", aspect=.2)
-    plt.figure()
-    plt.imshow(np.transpose(u.data[-1, :, :]), vmin=-1, vmax=1, cmap="seismic", aspect=1)
-    plt.show()
     if preset == 'constant':
         # With  a new m as Constant
         v0 = Constant(name="v", value=2.0, dtype=np.float32)
