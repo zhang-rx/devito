@@ -455,7 +455,7 @@ if __name__ == "__main__":
     # If running with MPI, we emit logging messages from rank0 only
     try:
         MPI.Init()  # Devito starts off with MPI disabled!
-        set_log_level('DEBUG', comm=MPI.COMM_WORLD)
+        set_log_level('DEBUG')
 
         if MPI.COMM_WORLD.size > 1 and not configuration['mpi']:
             warning("It seems that you're running over MPI with %d processes, but "

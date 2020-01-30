@@ -109,6 +109,11 @@ def log(msg, level=INFO, *args, **kwargs):
         ERROR, CRITICAL``.
     """
     color = COLORS[level] if sys.stdout.isatty() and sys.stderr.isatty() else '%s'
+    
+    from devito.mpi import MPI
+    rank = MPI.COMM_WORLD.rank
+    msg = "[rank %d] %s" % (rank, msg)
+
     logger.log(level, color % msg, *args, **kwargs)
 
 
