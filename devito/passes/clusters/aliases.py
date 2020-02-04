@@ -240,6 +240,7 @@ def process(cluster, candidates, processed, aliases, template, platform):
                       dtype=cluster.dtype, scope=scope)
 
         # The expression computing `alias`
+        #TODO: cleanup
         offsets = [0 if alias.writeto[i].is_Null else alias.writeto[i].lower
                    for i in aliases.index(origin)]
         indices = [i - o for i, o in zip(aliases.index(origin), offsets)]
