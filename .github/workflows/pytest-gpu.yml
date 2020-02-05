@@ -19,7 +19,7 @@ jobs:
 
     - name: look for ps1 file
       run: |
-        ls '${{ env.OUTPUT_PATH }}\PSA'
+        ls '${{ env.OUTPUT_PATH }}/PSA'
     - name: provision virtual machine in azure
       env:
         RESOURCE_GROUP: RhodriGpu
