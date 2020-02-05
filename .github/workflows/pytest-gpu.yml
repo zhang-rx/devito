@@ -1,79 +1,41 @@
-name: 'Azure VM deployment'
-description: 'Deploy a VM to Azure'
-inputs:
-    azure-credentials:
-        description: 'Azure credentials'
-        required: true
-        default: 'GithubActionsRG'
-    # azure-client-id:
-    #     description: 'Azure credentials'
-    #     required: true
-    #     default: 'GithubActionsRG'
-    # azure-client-secret:
-    #     description: 'Azure credentials'
-    #     required: true
-    #     default: 'GithubActionsRG'
-    # azure-tenant-id:
-    #     description: 'Azure credentials'
-    #     required: true
-    #     default: 'GithubActionsRG'
-    azure-resource-group:
-        description: 'Azure resource group'
-        required: true
-        default: 'GithubActionsRG'
-    azure-vm-name:
-        description: 'Azure VM name'
-        required: true
-        default: 'GithubActionsVM'
-    azure-vm-size:
-        description: 'Azure VM size'
-        required: true
-        default: 'Standard_DS2_v2'
-outputs:
-    stdout:
-        description: 'Stdout'
-    stderr:
-        description: 'Stderr'
-runs:
-    using: 'docker'
-    image: 'Dockerfile'
-    env:
-        HOME: /home/runner/
-    args:
-        - ${{ inputs.azure-credentials }}
-        # - ${{ inputs.azure-client-id }}
-        # - ${{ inputs.azure-client-secret }}
-        # - ${{ inputs.azure-tenant-id }}
-        - ${{ inputs.azure-resource-group }}
-        - ${{ inputs.azure-vm-name }}
-        - ${{ inputs.azure-vm-size }}
+# Adapted from https://github.com/weeyin83/vm-actions
+name: Deploy VM on Azure
+
+env:
+  OUTPUT_PATH: ${{ github.workspace }}
+
+on: [push]
 
 jobs:
-  build_and_deploy:
-    runs-on: windows-latest
+      
+  # Deploy VM in Azure
+  DeployVM:
+    runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v1
-    - name: Clone submodules
-      run: |
-        git submodule update --init --recursive
-    - name: Build
-      shell: pwsh
-      run: |
-        .\build.ps1
-    - name: Package and upload
-      run: |
-        nuget.bat ${{ secrets.NUGET_API_KEY }}
+    # checkout code from repo
+    - name: checkout repo
+      uses: actions/checkout@v1
 
-    - name: Build
-      shell: pwsh
+    - name: look for ps1 file
       run: |
-        .\build.ps1
-
-
-# default mounts
-# -v "/var/run/docker.sock":"/var/run/docker.sock"
-# -v "/home/runner/work/_temp/_github_home":"/github/home"
-# -v "/home/runner/work/_temp/_github_workflow":"/github/workflow"
-# -v "/home/runner/work/devito/devito":"/github/workspace"
-# desired
-# /home/runner/.azure
+        ls '${{ env.OUTPUT_PATH }}\PSA'
+    - name: provision virtual machine in azure
+      env:
+        RESOURCE_GROUP: RhodriGpu
+        RESOURCE_GROUP_REGION: uksouth
+        SERVER_NAME: githubactions
+        IMAGE_NAME: gpuImage
+        ADMIN_LOGIN: rhodri
+      run: >
+        powershell -command "& '${{ env.OUTPUT_PATH }}\PSA\deployVM.ps1'" 
+        -servicePrincipal ${{ secrets.SERVICE_PRINCIPAL_APPID }}
+        -servicePrincipalSecret ${{ secrets.SERVICE_PRINCIPAL_SECRET }} 
+        -servicePrincipalTenantId ${{ secrets.SERVICE_PRINCIPAL_TENANTID }} 
+        -azureSubscriptionName ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        -resourceGroupName %RESOURCE_GROUP% 
+        -resourceGroupNameRegion %RESOURCE_GROUP_REGION%
+        -serverName %SERVER_NAME%
+        -myVMimage %IMAGE_NAME%
+        -adminLogin %ADMIN_LOGIN% 
+        -adminPassword ${{ secrets.ADMIN_PASSWORD }}
