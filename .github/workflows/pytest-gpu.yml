@@ -28,7 +28,7 @@ jobs:
         IMAGE_NAME: gpuImage
         ADMIN_LOGIN: rhodri
       run: >
-        powershell -command "& '${{ env.OUTPUT_PATH }}\PSA\deployVM.ps1'" 
+        pwsh -command "& '${{ env.OUTPUT_PATH }}\PSA\deployVM.ps1'" 
         -servicePrincipal ${{ secrets.SERVICE_PRINCIPAL_APPID }}
         -servicePrincipalSecret ${{ secrets.SERVICE_PRINCIPAL_SECRET }} 
         -servicePrincipalTenantId ${{ secrets.SERVICE_PRINCIPAL_TENANTID }} 
