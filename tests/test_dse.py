@@ -361,9 +361,9 @@ class TestAliases(object):
         op0 = Operator(eqn, dle=('noop', {'openmp': True}))
         op1 = Operator(eqn, dle=('advanced', {'openmp': True}))
 
-        x0_blk_size = op1.parameters[5]
-        y0_blk_size = op1.parameters[8]
-        z_size = op1.parameters[-2]
+        x0_blk_size = op1.parameters[2]
+        y0_blk_size = op1.parameters[3]
+        z_size = op1.parameters[4]
 
         # Check Array shape
         arrays = [i for i in FindSymbols().visit(op1._func_table['bf0'].root)
@@ -403,8 +403,8 @@ class TestAliases(object):
         op0 = Operator(eqn, dle=('noop', {'openmp': True}))
         op1 = Operator(eqn, dle=('advanced', {'openmp': True}))
 
-        y0_blk_size = op1.parameters[8]
-        z_size = op1.parameters[-2]
+        y0_blk_size = op1.parameters[2]
+        z_size = op1.parameters[3]
 
         arrays = [i for i in FindSymbols().visit(op1._func_table['bf0'].root)
                   if i.is_Array]
@@ -444,9 +444,9 @@ class TestAliases(object):
         op0 = Operator(eqn, dle=('noop', {'openmp': True}))
         op1 = Operator(eqn, dle=('advanced', {'openmp': True}))
 
-        xi0_blk_size = op1.parameters[7]
-        yi0_blk_size = op1.parameters[12]
-        z_M, z_m, zi_ltkn, zi_rtkn = op1.parameters[-5:-1]
+        xi0_blk_size = op1.parameters[2]
+        yi0_blk_size = op1.parameters[3]
+        z_M, z_m, zi_ltkn, zi_rtkn = op1.parameters[4:8]
 
         # Check Array shape
         arrays = [i for i in FindSymbols().visit(op1._func_table['bf0'].root)
@@ -612,9 +612,9 @@ class TestAliases(object):
         op0 = Operator(eqn, dse='noop', dle=('advanced', {'openmp': False}))
         op1 = Operator(eqn, dse='aggressive', dle=('advanced', {'openmp': False}))
 
-        x0_blk_size = op1.parameters[5]
-        y0_blk_size = op1.parameters[8]
-        z_size = op1.parameters[-1]
+        x0_blk_size = op1.parameters[2]
+        y0_blk_size = op1.parameters[3]
+        z_size = op1.parameters[4]
 
         # Check Array shape
         arrays = [i for i in FindSymbols().visit(op1._func_table['bf0'].root)
