@@ -900,8 +900,9 @@ class TestTTI(object):
         assert len([i for i in arrays if i._mem_stack]) == 2
 
         # We expect exactly 6 scalar expressions to compute the stack-scoped Arrays
-        body = op._func_table['bf0'].root.body[-1].nodes[0].nodes[0]
-        exprs = FindNodes(Expression).visit(body)
+        trees = retrieve_iteration_tree(op._func_table['bf0'].root)
+        assert len(trees) == 2
+        exprs = FindNodes(Expression).visit(trees[0][2])
         assert len([i for i in exprs if i.is_scalar]) == 6
 
     @skipif(['nompi'])
