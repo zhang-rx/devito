@@ -917,7 +917,7 @@ class TestTTI(object):
 
     @switchconfig(profiling='advanced')
     @pytest.mark.parametrize('space_order,expected', [
-        (8, 177), (16, 311)
+        (8, 177), (16, 313)
     ])
     def test_tti_rewrite_aggressive_opcounts(self, space_order, expected):
         op = self.tti_operator(dse='aggressive', space_order=space_order)
