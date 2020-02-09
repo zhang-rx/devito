@@ -244,7 +244,8 @@ def test_cache_blocking_hierarchical(blockshape0, blockshape1, exception):
         assert False
 
 
-def test_cache_blocking_imperfect_nest():
+@pytest.mark.parametrize("blockinner", [True, False])
+def test_cache_blocking_imperfect_nest(blockinner):
     """
     Test that a non-perfect Iteration nest is blocked correctly.
     """
@@ -257,7 +258,7 @@ def test_cache_blocking_imperfect_nest():
             Eq(v.forward, u.forward.dz)]
 
     op0 = Operator(eqns, dle='noop')
-    op1 = Operator(eqns)
+    op1 = Operator(eqns, dle=('advanced', {'blockinner': blockinner}))
 
     # First, check the generated code
     trees = retrieve_iteration_tree(op1._func_table['bf0'].root)
