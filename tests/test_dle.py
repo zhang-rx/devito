@@ -4,6 +4,7 @@ from operator import mul
 import numpy as np
 import pytest
 from unittest.mock import patch
+from sympy import cos
 
 from conftest import skipif
 from devito import (Grid, Function, TimeFunction, SparseTimeFunction, SubDimension,
@@ -512,6 +513,10 @@ class TestNestedParallelism(object):
 
 class TestOffloading(object):
 
+    """
+    Test GPU offloading via OpenMP.
+    """
+
     @switchconfig(platform='nvidiaX')
     def test_basic(self):
         grid = Grid(shape=(3, 3, 3))
@@ -600,7 +605,7 @@ class TestOffloading(object):
              '[0:f_vec->size[1]][0:f_vec->size[2]])')
         assert op.body[4].footer[0].value ==\
             ('omp target exit data map(from: f[0:f_vec->size[0]]'
-            '[0:f_vec->size[1]][0:f_vec->size[2]])')
+             '[0:f_vec->size[1]][0:f_vec->size[2]])')
 
         # Check `g` -- note that unlike `f`, this one should be `delete` upon
         # exit, not `from`
@@ -609,4 +614,21 @@ class TestOffloading(object):
              '[0:g_vec->size[1]][0:g_vec->size[2]])')
         assert op.body[4].footer[3].value ==\
             ('omp target exit data map(delete: g[0:g_vec->size[0]]'
-            '[0:g_vec->size[1]][0:g_vec->size[2]])')
+             '[0:g_vec->size[1]][0:g_vec->size[2]])')
+
+    @switchconfig(platform='nvidiaX')
+    def test_arrays(self):
+        grid = Grid(shape=(3, 3, 3))
+
+        f = Function(name='f', grid=grid)
+        u = TimeFunction(name='u', grid=grid, space_order=2)
+
+        eqn = Eq(u.forward, u*cos(f*2))
+
+        op = Operator(eqn, dse='aggressive', dle=('noop', {'openmp': True}))
+
+        assert str(op.body[2].header[0]) == 'float (*r1)[y_size][z_size];'
+        assert op.body[2].header[1].value == ('omp target enter data map(alloc: '
+                                              'r1[0:x_size][0:y_size][0:z_size])')
+        assert op.body[2].footer[0].value == ('omp target exit data map(delete: '
+                                              'r1[0:x_size][0:y_size][0:z_size])')
