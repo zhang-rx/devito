@@ -7,8 +7,8 @@ from unittest.mock import patch
 from sympy import cos
 
 from conftest import skipif
-from devito import (Grid, Function, TimeFunction, SparseTimeFunction, SubDimension,
-                    Eq, Operator, switchconfig)
+from devito import (Grid, Dimension, Function, TimeFunction, SparseTimeFunction,
+                    SubDimension, Eq, Operator, switchconfig)
 from devito.exceptions import InvalidArgument
 from devito.ir.iet import Call, Iteration, Conditional, FindNodes, retrieve_iteration_tree
 from devito.passes import BlockDimension, NThreads, NThreadsNonaffine
@@ -617,7 +617,7 @@ class TestOffloading(object):
              '[0:g_vec->size[1]][0:g_vec->size[2]])')
 
     @switchconfig(platform='nvidiaX')
-    def test_arrays(self):
+    def test_array_rw(self):
         grid = Grid(shape=(3, 3, 3))
 
         f = Function(name='f', grid=grid)
@@ -635,3 +635,25 @@ class TestOffloading(object):
         assert op.body[2].footer[0].contents[0].value ==\
             'omp target exit data map(delete: r1[0:x_size][0:y_size][0:z_size])'
         assert op.body[2].footer[0].contents[1].text == 'free(r1)'
+
+    @switchconfig(platform='nvidiaX')
+    def test_function_wo(self):
+        grid = Grid(shape=(3, 3, 3))
+        i = Dimension(name='i')
+
+        f = Function(name='f', shape=(1,), dimensions=(i,), grid=grid)
+        u = TimeFunction(name='u', grid=grid)
+
+        eqns = [Eq(u.forward, u + 1),
+                Eq(f[0], u[0, 0, 0, 0])]
+
+        op = Operator(eqns, dle=('noop', {'openmp': True}))
+
+        assert len(op.body[2].header) == 1
+        assert len(op.body[2].footer) == 1
+        assert op.body[2].header[0].value ==\
+            ('omp target enter data map(to: u[0:u_vec->size[0]]'
+             '[0:u_vec->size[1]][0:u_vec->size[2]][0:u_vec->size[3]])')
+        assert op.body[2].footer[0].value ==\
+            ('omp target exit data map(from: u[0:u_vec->size[0]]'
+             '[0:u_vec->size[1]][0:u_vec->size[2]][0:u_vec->size[3]])')
