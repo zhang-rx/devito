@@ -8,7 +8,7 @@ from sympy import cos
 
 from conftest import skipif
 from devito import (Grid, Dimension, Function, TimeFunction, SparseTimeFunction,
-                    SubDimension, Eq, Operator, switchconfig)
+                    SubDimension, Eq, Inc, Operator, switchconfig)
 from devito.exceptions import InvalidArgument
 from devito.ir.iet import Call, Iteration, Conditional, FindNodes, retrieve_iteration_tree
 from devito.passes import BlockDimension, NThreads, NThreadsNonaffine
@@ -657,3 +657,24 @@ class TestOffloading(object):
         assert op.body[2].footer[0].value ==\
             ('omp target exit data map(from: u[0:u_vec->size[0]]'
              '[0:u_vec->size[1]][0:u_vec->size[2]][0:u_vec->size[3]])')
+
+    @switchconfig(platform='nvidiaX')
+    def test_timeparallel_reduction(self):
+        grid = Grid(shape=(3, 3, 3))
+        i = Dimension(name='i')
+
+        f = Function(name='f', shape=(1,), dimensions=(i,), grid=grid)
+        u = TimeFunction(name='u', grid=grid)
+
+        op = Operator(Inc(f[0], u + 1), dle=('noop', {'openmp': True}))
+
+        trees = retrieve_iteration_tree(op)
+        assert len(trees) == 1
+        tree = trees[0]
+        assert all(i.is_ParallelRelaxed and not i.is_Parallel for i in tree)
+
+        # The time loop is not in OpenMP canonical form, so it won't be parallelized
+        assert not tree.root.pragmas
+        assert len(tree[1].pragmas) == 1
+        assert tree[1].pragmas[0].value ==\
+            'omp target teams distribute parallel for collapse(3) reduction(+:f[0])'
